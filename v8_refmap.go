@@ -21,7 +21,9 @@ type ReferenceMap struct {
 }
 
 func NewReferenceMap() *ReferenceMap {
-	return &ReferenceMap{}
+	return &ReferenceMap{
+		entries: map[ID]*entry{},
+	}
 }
 
 func (rm *ReferenceMap) Get(id ID) Reference {

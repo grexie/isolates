@@ -47,7 +47,8 @@ extern "C" {
     }
 
     v8::Local<v8::Object> object = maybeObject->ToObject(context).ToLocalChecked();
-    return v8_Value_ValueTuple(isolate, object->GetInternalField(field));
+    v8::Local<v8::Value> result = object->GetInternalField(field);
+    return v8_Value_ValueTuple(isolate, result);
   }
 
   Error v8_Value_Set(ContextPtr pContext, ValuePtr pValue, const char* field, ValuePtr pNewValue) {
@@ -117,6 +118,19 @@ extern "C" {
 
     v8::Local<v8::Object> object = maybeObject->ToObject(context).ToLocalChecked();
     object->SetInternalField(field, newValue);
+  }
+
+  int v8_Object_GetInternalFieldCount(ContextPtr pContext, ValuePtr pValue) {
+    VALUE_SCOPE(pContext);
+
+    Value* value = static_cast<Value*>(pValue);
+    v8::Local<v8::Value> maybeObject = value->Get(isolate);
+    if (!maybeObject->IsObject()) {
+      return 0;
+    }
+
+    v8::Local<v8::Object> object = maybeObject->ToObject(context).ToLocalChecked();
+    return object->InternalFieldCount();
   }
 
   Error v8_Value_DefineProperty(ContextPtr pContext, ValuePtr pValue, const char* key, ValuePtr pGetHandler, ValuePtr pSetHandler, bool enumerable, bool configurable) {
@@ -270,7 +284,6 @@ extern "C" {
 
   String v8_Value_String(ContextPtr pContext, ValuePtr pValue) {
     VALUE_SCOPE(pContext);
-
     v8::Local<v8::Value> value = static_cast<Value*>(pValue)->Get(isolate);
     return v8_String_Create(value);
   }

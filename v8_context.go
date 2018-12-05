@@ -17,10 +17,12 @@ type Context struct {
 	pointer   C.ContextPtr
 	undefined *Value
 
-	functions    *ReferenceMap
-	accessors    *ReferenceMap
-	values       *ReferenceMap
-	constructors map[reflect.Type]*FunctionTemplate
+	functions *ReferenceMap
+	accessors *ReferenceMap
+	values    *ReferenceMap
+
+	baseConstructor *FunctionTemplate
+	constructors    map[reflect.Type]*FunctionTemplate
 }
 
 func (i *Isolate) NewContext() *Context {

@@ -69,9 +69,9 @@ func (c *Context) createImmediateValue(v C.ImmediateValue, kinds kinds) *Value {
 }
 
 func marshalValue(v reflect.Value) reflect.Value {
-	if v.Kind() == reflect.Struct {
-		return marshalValue(v.Addr())
-	}
+	// if v.Kind() == reflect.Struct {
+	// 	return marshalValue(v.Addr())
+	// }
 
 	if v.Type().Implements(marshalerType) {
 		m := v.MethodByName("MarshalV8")
@@ -124,11 +124,17 @@ func (c *Context) create(v reflect.Value) (*Value, error) {
 			return constructor, err
 		}
 		return nil, fmt.Errorf("func not supported: %#v", v.Interface())
-	case reflect.Interface:
-		// return c.create(v.Elem())
-		return nil, fmt.Errorf("interface type not supported: %#v", v.Interface())
-	case reflect.Ptr:
-		return nil, fmt.Errorf("pointer type not supported: %#v", v.Interface())
+	case reflect.Interface, reflect.Ptr:
+		if p, err := c.createPrototype(v.Type()); err != nil {
+			return nil, err
+		} else if value, err := p.GetFunction().New(); err != nil {
+			return nil, err
+		} else {
+			id := c.values.Ref(&valueRef{v, 0})
+			idv, _ := c.Create(id)
+			value.SetInternalField(0, idv)
+			return value, nil
+		}
 	case reflect.Map:
 		if v.Type().Key() != stringType {
 			return nil, fmt.Errorf("map keys must be strings, %s not permissable in v8", v.Type().Key())
@@ -150,7 +156,17 @@ func (c *Context) create(v reflect.Value) (*Value, error) {
 
 		return o, nil
 	case reflect.Struct:
-		return nil, fmt.Errorf("struct not supported: %#v", v.Addr().Interface())
+		// return nil, fmt.Errorf("struct not supported: %#v", v.Addr().Interface())
+		if p, err := c.createPrototype(v.Type()); err != nil {
+			return nil, err
+		} else if value, err := p.GetFunction().New(); err != nil {
+			return nil, err
+		} else {
+			id := c.values.Ref(&valueRef{v, 0})
+			idv, _ := c.Create(id)
+			value.SetInternalField(0, idv)
+			return value, nil
+		}
 	case reflect.Array, reflect.Slice:
 		if v.Type().Elem().Kind() == reflect.Uint8 {
 			if v.Type().Kind() == reflect.Array {
@@ -195,7 +211,7 @@ func (c *Context) create(v reflect.Value) (*Value, error) {
 		}
 	}
 
-	panic(fmt.Sprintf("unknown kind: %v", v.Kind()))
+	panic(fmt.Sprintf("unsupported kind: %v", v.Kind()))
 }
 
 func getName(name string) string {
@@ -245,28 +261,33 @@ func (c *Context) createConstructor(cons interface{}) (*Value, error) {
 	constructor := cv.Type()
 	prototype := constructor.Out(0)
 
+	if prototype.Kind() == reflect.Ptr || prototype.Kind() == reflect.Interface {
+		prototype = prototype.Elem()
+	}
+
 	if fn, ok := c.constructors[constructor]; ok {
 		return fn.GetFunction(), nil
 	} else if pfn, err := c.createPrototype(prototype); err != nil {
 		return nil, err
 	} else {
+		pfnv := pfn.GetFunction()
 		fn := c.NewFunctionTemplate(func(in FunctionArgs) (*Value, error) {
+			pfnv.Call(in.This)
 			r := cv.Call([]reflect.Value{reflect.ValueOf(in)})
 
 			if r[1].Interface() != nil {
 				return nil, r[1].Interface().(error)
 			}
 
-			v := in.This
-			id := c.values.Ref(&valueRef{r[0], 0})
-			idv, _ := c.Create(id)
-			v.SetInternalField(0, idv)
-			return v, nil
+			in.This.SetReceiver(&r[0])
+			return in.This, nil
 		})
 		fn.SetName(prototype.Name())
-		fn.Inherit(pfn)
-		fn.SetHiddenPrototype(true)
 		fn.GetInstanceTemplate().SetInternalFieldCount(1)
+
+		if err := c.writePrototypeFields(fn.GetInstanceTemplate(), fn.GetPrototypeTemplate(), prototype); err != nil {
+			return nil, err
+		}
 
 		c.constructors[constructor] = fn
 		return fn.GetFunction(), nil
@@ -291,8 +312,7 @@ func (c *Context) createPrototype(prototype reflect.Type) (*FunctionTemplate, er
 		fn.SetName(prototype.Name())
 		fn.GetInstanceTemplate().SetInternalFieldCount(1)
 
-		proto := fn.GetPrototypeTemplate()
-		if err := c.writePrototypeFields(proto, prototype); err != nil {
+		if err := c.writePrototypeFields(fn.GetInstanceTemplate(), fn.GetPrototypeTemplate(), prototype); err != nil {
 			return nil, err
 		}
 
@@ -301,7 +321,7 @@ func (c *Context) createPrototype(prototype reflect.Type) (*FunctionTemplate, er
 	}
 }
 
-func (c *Context) writePrototypeFields(v *ObjectTemplate, prototype reflect.Type) error {
+func (c *Context) writePrototypeFields(v *ObjectTemplate, o *ObjectTemplate, prototype reflect.Type) error {
 	getters := map[string]Getter{}
 	setters := map[string]Setter{}
 
@@ -317,7 +337,7 @@ func (c *Context) writePrototypeFields(v *ObjectTemplate, prototype reflect.Type
 				}
 
 				if sub.Kind() == reflect.Struct {
-					if err := c.writePrototypeFields(v, sub.Type()); err != nil {
+					if err := c.writePrototypeFields(v, o, sub.Type()); err != nil {
 						return fmt.Errorf("Writing embedded field %q: %v", f.Name, err)
 					}
 					continue
@@ -331,16 +351,38 @@ func (c *Context) writePrototypeFields(v *ObjectTemplate, prototype reflect.Type
 
 			func(f reflect.StructField, i int) {
 				getters[name] = func(in GetterArgs) (*Value, error) {
-					vid, _ := in.Holder.GetInternalField(0)
-					id := ID(vid.Int64())
-					v := c.values.Get(id).(*valueRef).value
+					r := in.Holder.Receiver(prototype)
 
-					fval := v.FieldByName(f.Name)
+					if r == nil {
+						return nil, fmt.Errorf("receiver not found")
+					} else if r.Kind() == reflect.Ptr {
+						v := r.Elem()
+						r = &v
+					}
 
+					fval := r.FieldByName(f.Name)
 					if v, err := c.create(fval); err != nil {
 						return nil, fmt.Errorf("field %q: %v", f.Name, err)
 					} else {
 						return v, nil
+					}
+				}
+				setters[name] = func(in SetterArgs) error {
+					r := in.Holder.Receiver(prototype)
+
+					if r == nil {
+						return fmt.Errorf("receiver not found")
+					} else if r.Kind() == reflect.Ptr {
+						v := r.Elem()
+						r = &v
+					}
+
+					fval := r.FieldByName(f.Name)
+					if v := in.Value.Unmarshal(fval.Type()); v == nil {
+						return nil
+					} else {
+						fval.Set(*v)
+						return nil
 					}
 				}
 			}(f, i)
@@ -359,10 +401,13 @@ func (c *Context) writePrototypeFields(v *ObjectTemplate, prototype reflect.Type
 			if strings.HasPrefix(name, "V8Get") {
 				name = getName(strings.TrimPrefix(name, "V8Get"))
 				getters[name] = func(in GetterArgs) (*Value, error) {
-					vid, _ := in.Holder.GetInternalField(0)
-					id := ID(vid.Int64())
-					h := c.values.Get(id).(*valueRef).value
-					v := method.Func.Call([]reflect.Value{h, reflect.ValueOf(in)})
+					r := in.Holder.Receiver(prototype)
+
+					if r == nil {
+						return nil, fmt.Errorf("receiver not found")
+					}
+
+					v := method.Func.Call([]reflect.Value{*r, reflect.ValueOf(in)})
 
 					if v1, ok := v[1].Interface().(error); ok {
 						return nil, v1
@@ -377,10 +422,13 @@ func (c *Context) writePrototypeFields(v *ObjectTemplate, prototype reflect.Type
 			if strings.HasPrefix(name, "V8Set") {
 				name = getName(strings.TrimPrefix(name, "V8Set"))
 				setters[name] = func(in SetterArgs) error {
-					vid, _ := in.Holder.GetInternalField(0)
-					id := ID(vid.Int64())
-					h := c.values.Get(id).(*valueRef).value
-					v := method.Func.Call([]reflect.Value{h, reflect.ValueOf(in)})
+					r := in.Holder.Receiver(prototype)
+
+					if r == nil {
+						return fmt.Errorf("receiver not found")
+					}
+
+					v := method.Func.Call([]reflect.Value{*r, reflect.ValueOf(in)})
 
 					if v1, ok := v[1].Interface().(error); ok {
 						return v1
@@ -394,10 +442,13 @@ func (c *Context) writePrototypeFields(v *ObjectTemplate, prototype reflect.Type
 				name = getName(strings.TrimPrefix(name, "V8Func"))
 				(func(name string, method reflect.Method) {
 					fn := c.NewFunctionTemplate(func(in FunctionArgs) (*Value, error) {
-						vid, _ := in.Holder.GetInternalField(0)
-						id := ID(vid.Int64())
-						h := c.values.Get(id).(*valueRef).value
-						v := method.Func.Call([]reflect.Value{h, reflect.ValueOf(in)})
+						r := in.Holder.Receiver(prototype)
+
+						if r == nil {
+							return nil, fmt.Errorf("receiver not found")
+						}
+
+						v := method.Func.Call([]reflect.Value{*r, reflect.ValueOf(in)})
 
 						if v1, ok := v[1].Interface().(error); ok {
 							return nil, v1
@@ -407,7 +458,7 @@ func (c *Context) writePrototypeFields(v *ObjectTemplate, prototype reflect.Type
 							return nil, nil
 						}
 					}).GetFunction()
-					v.SetAccessor(name, func(in GetterArgs) (*Value, error) {
+					o.SetAccessor(name, func(in GetterArgs) (*Value, error) {
 						return fn, nil
 					}, nil)
 				})(name, method)
@@ -422,7 +473,7 @@ func (c *Context) writePrototypeFields(v *ObjectTemplate, prototype reflect.Type
 
 	// Also export any methods of the struct pointer that match the callback type.
 	if prototype.Kind() != reflect.Ptr {
-		return c.writePrototypeFields(v, reflect.PtrTo(prototype))
+		return c.writePrototypeFields(v, o, reflect.PtrTo(prototype))
 	}
 
 	return nil

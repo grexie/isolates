@@ -32,6 +32,7 @@ public:
 
 private:
   v8::Isolate* isolate_;
+  v8::Eternal<v8::Context> context_;
   std::unique_ptr<v8_inspector::V8Inspector> inspector_;
   std::unique_ptr<v8_inspector::V8InspectorSession> session_;
   int inspectorId_;
@@ -40,6 +41,8 @@ private:
 };
 
 void Inspector::contextCreated(const v8_inspector::V8ContextInfo& contextInfo) {
+  v8::HandleScope handleScope(isolate_);
+  context_.Set(isolate_, contextInfo.context);
   inspector_->contextCreated(contextInfo);
 }
 
@@ -49,7 +52,6 @@ void Inspector::contextDestroyed(v8::Local<v8::Context> context) {
 
 void Inspector::dispatchProtocolMessage(v8_inspector::StringView& message) {
   ISOLATE_SCOPE(isolate_);
-
   session_->dispatchProtocolMessage(message);
 }
 

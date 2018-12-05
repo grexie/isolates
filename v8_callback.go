@@ -43,7 +43,7 @@ func FunctionCallbackHandler(context *Context, info *C.CallbackInfo, args *callb
 }
 
 func GetterCallbackHandler(context *Context, info *C.CallbackInfo, args *callbackArgs, accessorId ID) (*Value, error) {
-	accessorRef := context.functions.Get(accessorId)
+	accessorRef := context.accessors.Get(accessorId)
 	if accessorRef == nil {
 		panic(fmt.Errorf("missing function pointer during callback for getter #%d", accessorId))
 	}
@@ -59,7 +59,7 @@ func GetterCallbackHandler(context *Context, info *C.CallbackInfo, args *callbac
 }
 
 func SetterCallbackHandler(context *Context, info *C.CallbackInfo, args *callbackArgs, accessorId ID) (*Value, error) {
-	accessorRef := context.functions.Get(accessorId)
+	accessorRef := context.accessors.Get(accessorId)
 	if accessorRef == nil {
 		panic(fmt.Errorf("missing function pointer during callback for setter #%d", accessorId))
 	}

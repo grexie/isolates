@@ -7,6 +7,7 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"runtime"
 	"time"
 	"unsafe"
@@ -87,6 +88,12 @@ func (v *Value) GetInternalField(i int) (*Value, error) {
 	return v.context.newValueFromTuple(C.v8_Object_GetInternalField(v.context.pointer, v.pointer, C.int(i)))
 }
 
+func (v *Value) GetInternalFieldCount() int {
+	v.context.ref()
+	defer v.context.unref()
+	return int(C.v8_Object_GetInternalFieldCount(v.context.pointer, v.pointer))
+}
+
 func (v *Value) Call(self *Value, argv ...*Value) (*Value, error) {
 	pargv := make([]C.ValuePtr, len(argv)+1)
 	for i, argvi := range argv {
@@ -130,6 +137,10 @@ func (v *Value) Int64() int64 {
 	return int64(C.v8_Value_Int64(v.context.pointer, v.pointer))
 }
 
+func (v *Value) Float64() float64 {
+	return float64(C.v8_Value_Float64(v.context.pointer, v.pointer))
+}
+
 func (v *Value) Bool() bool {
 	return C.v8_Value_Bool(v.context.pointer, v.pointer) == 1
 }
@@ -156,8 +167,9 @@ func (v *Value) PromiseInfo() (PromiseState, *Value, error) {
 
 func (v *Value) String() string {
 	ps := C.v8_Value_String(v.context.pointer, v.pointer)
+	defer C.free(unsafe.Pointer(ps.data))
+
 	s := C.GoStringN(ps.data, ps.length)
-	C.free(unsafe.Pointer(ps.data))
 	return s
 }
 
@@ -171,6 +183,51 @@ func (v *Value) MarshalJSON() ([]byte, error) {
 	} else {
 		return []byte(s.String()), nil
 	}
+}
+
+func (v *Value) Receiver(t reflect.Type) *reflect.Value {
+	if v.GetInternalFieldCount() == 0 {
+		return nil
+	}
+
+	vid, _ := v.GetInternalField(0)
+	id := ID(vid.Int64())
+
+	if id == ID(0) {
+		return nil
+	}
+
+	ref := v.context.values.Get(id)
+	if ref == nil {
+		return nil
+	}
+
+	var r reflect.Value
+	if vref, ok := ref.(*valueRef); !ok {
+		return nil
+	} else {
+		r = vref.value
+	}
+
+	rt := r.Type()
+	if rt.Kind() == reflect.Ptr || rt.Kind() == reflect.Interface {
+		rt = rt.Elem()
+	}
+	if t.Kind() == reflect.Ptr || t.Kind() == reflect.Interface {
+		t = t.Elem()
+	}
+
+	if rt != t {
+		return nil
+	}
+
+	return &r
+}
+
+func (v *Value) SetReceiver(value *reflect.Value) {
+	id := v.context.values.Ref(&valueRef{*value, 0})
+	idv, _ := v.context.Create(id)
+	v.SetInternalField(0, idv)
 }
 
 func (v *Value) release() {

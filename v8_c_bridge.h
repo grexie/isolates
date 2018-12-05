@@ -202,7 +202,7 @@ extern void v8_Object_SetInternalField(ContextPtr ctxptr, ValuePtr value_ptr, in
 extern Error v8_Value_SetPrivate(ContextPtr ctxptr, ValuePtr valueptr, PrivatePtr privateptr, ValuePtr new_valueptr);
 extern ValueTuple v8_Value_GetPrivate(ContextPtr ctxptr, ValuePtr valueptr, PrivatePtr privateptr);
 extern Error v8_Value_DeletePrivate(ContextPtr ctxptr, ValuePtr valueptr, PrivatePtr privateptr);
-
+extern int v8_Object_GetInternalFieldCount(ContextPtr pContext, ValuePtr pValue);
 extern ValueTuple  v8_Value_Call(ContextPtr ctx, ValuePtr func, ValuePtr self, int argc, ValuePtr* argv);
 extern ValueTuple  v8_Value_New(ContextPtr ctx,
                                 ValuePtr func,

@@ -63,7 +63,7 @@ extern "C" {
   void v8_ObjectTemplate_SetAccessor(ContextPtr pContext, ObjectTemplatePtr pObject, const char* name, const char* id, bool setter) {
     VALUE_SCOPE(pContext);
     v8::Local<v8::ObjectTemplate> object = static_cast<ObjectTemplate*>(pObject)->Get(isolate);
-    object->SetAccessor(v8::String::NewFromUtf8(isolate, name), GetterCallbackHandler, setter ? SetterCallbackHandler : 0, v8::String::NewFromUtf8(isolate, id));
+    object->SetAccessor(v8::String::NewFromUtf8(isolate, name), GetterCallbackHandler, setter ? SetterCallbackHandler : 0, v8::String::NewFromUtf8(isolate, id), (v8::AccessControl)(v8::ALL_CAN_READ | v8::ALL_CAN_WRITE), v8::PropertyAttribute::None);
   }
 
   void v8_ObjectTemplate_SetInternalFieldCount(ContextPtr pContext, ObjectTemplatePtr pObject, int count) {
