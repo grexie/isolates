@@ -209,6 +209,8 @@ func (v *Value) Receiver(t reflect.Type) *reflect.Value {
 		r = vref.value
 	}
 
+	ptr := t.Kind() == reflect.Ptr
+
 	rt := r.Type()
 	if rt.Kind() == reflect.Ptr || rt.Kind() == reflect.Interface {
 		rt = rt.Elem()
@@ -219,6 +221,12 @@ func (v *Value) Receiver(t reflect.Type) *reflect.Value {
 
 	if rt != t {
 		return nil
+	}
+
+	if ptr && r.Kind() != reflect.Ptr {
+		r = r.Addr()
+	} else if !ptr && r.Kind() == reflect.Ptr {
+		r = r.Elem()
 	}
 
 	return &r

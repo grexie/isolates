@@ -68,17 +68,15 @@ func (c *Context) createImmediateValue(v C.ImmediateValue, kinds kinds) *Value {
 	return c.newValue(C.v8_Context_Create(c.pointer, v), C.Kinds(kinds))
 }
 
-func marshalValue(v reflect.Value) reflect.Value {
-	// if v.Kind() == reflect.Struct {
-	// 	return marshalValue(v.Addr())
-	// }
-
-	if v.Type().Implements(marshalerType) {
-		m := v.MethodByName("MarshalV8")
-		v = m.Call([]reflect.Value{})[0]
+func marshalValue(val reflect.Value) reflect.Value {
+	if val.Type().Implements(reflect.TypeOf((*Marshaler)(nil)).Elem()) {
+		m := val.MethodByName("MarshalV8")
+		val = m.Call([]reflect.Value{})[0]
+	} else if val.Type().Kind() != reflect.Ptr && reflect.PtrTo(val.Type()).Implements(reflect.TypeOf((*Marshaler)(nil)).Elem()) {
+		m := val.Addr().MethodByName("MarshalV8")
+		val = m.Call([]reflect.Value{})[0]
 	}
-
-	return v
+	return val
 }
 
 func (c *Context) create(v reflect.Value) (*Value, error) {
@@ -125,16 +123,7 @@ func (c *Context) create(v reflect.Value) (*Value, error) {
 		}
 		return nil, fmt.Errorf("func not supported: %#v", v.Interface())
 	case reflect.Interface, reflect.Ptr:
-		if p, err := c.createPrototype(v.Type()); err != nil {
-			return nil, err
-		} else if value, err := p.GetFunction().New(); err != nil {
-			return nil, err
-		} else {
-			id := c.values.Ref(&valueRef{v, 0})
-			idv, _ := c.Create(id)
-			value.SetInternalField(0, idv)
-			return value, nil
-		}
+		return c.create(v.Elem())
 	case reflect.Map:
 		if v.Type().Key() != stringType {
 			return nil, fmt.Errorf("map keys must be strings, %s not permissable in v8", v.Type().Key())
@@ -156,8 +145,7 @@ func (c *Context) create(v reflect.Value) (*Value, error) {
 
 		return o, nil
 	case reflect.Struct:
-		// return nil, fmt.Errorf("struct not supported: %#v", v.Addr().Interface())
-		if p, err := c.createPrototype(v.Type()); err != nil {
+		if p, err := c.createPrototype(v, v.Type()); err != nil {
 			return nil, err
 		} else if value, err := p.GetFunction().New(); err != nil {
 			return nil, err
@@ -267,7 +255,7 @@ func (c *Context) createConstructor(cons interface{}) (*Value, error) {
 
 	if fn, ok := c.constructors[constructor]; ok {
 		return fn.GetFunction(), nil
-	} else if pfn, err := c.createPrototype(prototype); err != nil {
+	} else if pfn, err := c.createPrototype(reflect.Zero(prototype), prototype); err != nil {
 		return nil, err
 	} else {
 		pfnv := pfn.GetFunction()
@@ -285,7 +273,7 @@ func (c *Context) createConstructor(cons interface{}) (*Value, error) {
 		fn.SetName(prototype.Name())
 		fn.GetInstanceTemplate().SetInternalFieldCount(1)
 
-		if err := c.writePrototypeFields(fn.GetInstanceTemplate(), fn.GetPrototypeTemplate(), prototype); err != nil {
+		if err := c.writePrototypeFields(fn.GetInstanceTemplate(), fn.GetPrototypeTemplate(), reflect.Zero(prototype), prototype); err != nil {
 			return nil, err
 		}
 
@@ -294,7 +282,7 @@ func (c *Context) createConstructor(cons interface{}) (*Value, error) {
 	}
 }
 
-func (c *Context) createPrototype(prototype reflect.Type) (*FunctionTemplate, error) {
+func (c *Context) createPrototype(v reflect.Value, prototype reflect.Type) (*FunctionTemplate, error) {
 	if prototype.Kind() == reflect.Ptr || prototype.Kind() == reflect.Interface {
 		prototype = prototype.Elem()
 	}
@@ -303,7 +291,7 @@ func (c *Context) createPrototype(prototype reflect.Type) (*FunctionTemplate, er
 		return fn, nil
 	} else {
 		if prototype.Kind() != reflect.Interface && prototype.Kind() != reflect.Struct {
-			return nil, fmt.Errorf("prototype must be an interface")
+			return nil, fmt.Errorf("prototype must be an interface", prototype)
 		}
 
 		fn := c.NewFunctionTemplate(func(in FunctionArgs) (*Value, error) {
@@ -312,7 +300,7 @@ func (c *Context) createPrototype(prototype reflect.Type) (*FunctionTemplate, er
 		fn.SetName(prototype.Name())
 		fn.GetInstanceTemplate().SetInternalFieldCount(1)
 
-		if err := c.writePrototypeFields(fn.GetInstanceTemplate(), fn.GetPrototypeTemplate(), prototype); err != nil {
+		if err := c.writePrototypeFields(fn.GetInstanceTemplate(), fn.GetPrototypeTemplate(), v, prototype); err != nil {
 			return nil, err
 		}
 
@@ -321,7 +309,7 @@ func (c *Context) createPrototype(prototype reflect.Type) (*FunctionTemplate, er
 	}
 }
 
-func (c *Context) writePrototypeFields(v *ObjectTemplate, o *ObjectTemplate, prototype reflect.Type) error {
+func (c *Context) writePrototypeFields(v *ObjectTemplate, o *ObjectTemplate, value reflect.Value, prototype reflect.Type) error {
 	getters := map[string]Getter{}
 	setters := map[string]Setter{}
 
@@ -331,13 +319,13 @@ func (c *Context) writePrototypeFields(v *ObjectTemplate, o *ObjectTemplate, pro
 
 			// Inline embedded fields.
 			if f.Anonymous {
-				sub := reflect.Zero(prototype).Field(i)
+				sub := value.Field(i)
 				for sub.Kind() == reflect.Ptr && !sub.IsNil() {
 					sub = sub.Elem()
 				}
 
 				if sub.Kind() == reflect.Struct {
-					if err := c.writePrototypeFields(v, o, sub.Type()); err != nil {
+					if err := c.writePrototypeFields(v, o, value, sub.Type()); err != nil {
 						return fmt.Errorf("Writing embedded field %q: %v", f.Name, err)
 					}
 					continue
@@ -349,13 +337,20 @@ func (c *Context) writePrototypeFields(v *ObjectTemplate, o *ObjectTemplate, pro
 				continue
 			}
 
-			func(f reflect.StructField, i int) {
+			func(value reflect.Value, f reflect.StructField, i int) {
+				for value.Kind() == reflect.Ptr && !value.IsNil() {
+					value = value.Elem()
+				}
+				t := value.Type()
+
 				getters[name] = func(in GetterArgs) (*Value, error) {
-					r := in.Holder.Receiver(prototype)
+					r := in.Holder.Receiver(t)
 
 					if r == nil {
 						return nil, fmt.Errorf("receiver not found")
-					} else if r.Kind() == reflect.Ptr {
+					}
+
+					for r.Kind() == reflect.Ptr && !r.IsNil() {
 						v := r.Elem()
 						r = &v
 					}
@@ -385,7 +380,7 @@ func (c *Context) writePrototypeFields(v *ObjectTemplate, o *ObjectTemplate, pro
 						return nil
 					}
 				}
-			}(f, i)
+			}(value, f, i)
 		}
 	}
 
@@ -473,7 +468,7 @@ func (c *Context) writePrototypeFields(v *ObjectTemplate, o *ObjectTemplate, pro
 
 	// Also export any methods of the struct pointer that match the callback type.
 	if prototype.Kind() != reflect.Ptr {
-		return c.writePrototypeFields(v, o, reflect.PtrTo(prototype))
+		return c.writePrototypeFields(v, o, value, reflect.PtrTo(prototype))
 	}
 
 	return nil

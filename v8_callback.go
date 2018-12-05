@@ -6,6 +6,7 @@ import "C"
 
 import (
 	"fmt"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"unsafe"
@@ -111,7 +112,8 @@ func CallbackHandler(info *C.CallbackInfo) (r C.ValueTuple) {
 
 	defer func() {
 		if v := recover(); v != nil {
-			err := fmt.Sprintf("panic during callback: %+v", v)
+			debug.PrintStack()
+			err := fmt.Sprintf("%+v", v)
 			r.error = C.Error{data: C.CString(err), length: C.int(len(err))}
 		}
 	}()
