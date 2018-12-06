@@ -4,7 +4,7 @@ V8DIR="$(dirname ${BASH_SOURCE[0]})"
 
 WORKDIR=$(mktemp -d)
 mkdir -p ${WORKDIR}
-pushd ${WORKDIR} 2>/dev/null
+pushd ${WORKDIR} >/dev/null
 
 trap "rm -Rf ${WORKDIR}" EXIT
 
@@ -28,4 +28,4 @@ rm -Rf ${V8DIR}/{include,libv8}
 cp -r $(pwd)/vendor/v8/include ${V8DIR}/include
 cp -r $(pwd)/vendor/v8/out/*.release ${V8DIR}/libv8
 
-popd 2>/dev/null
+popd >/dev/null
