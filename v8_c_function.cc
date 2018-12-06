@@ -107,7 +107,7 @@ extern "C" {
       info.IsConstructCall(),
       argc,
       argv,
-      NULL,
+      String{NULL, 0},
       NULL
     });
 
