@@ -1,6 +1,6 @@
 #!/bin/bash -e
 
-V8DIR="$(dirname ${BASH_SOURCE[0]})"
+V8DIR="$(cd $(dirname ${BASH_SOURCE[0]}) && pwd)"
 
 WORKDIR=$(mktemp -d)
 mkdir -p ${WORKDIR}
