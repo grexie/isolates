@@ -1,4 +1,4 @@
-#!/bin/bash -e
+#!/bin/bash -ex
 
 V8DIR="$(dirname ${BASH_SOURCE[0]})"
 
