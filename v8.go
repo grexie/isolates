@@ -1,19 +1,5 @@
 package v8
 
-// Reference materials:
-//   https://developers.google.com/v8/embed#accessors
-//   https://developers.google.com/v8/embed#exceptions
-//   https://docs.google.com/document/d/1g8JFi8T_oAE_7uAri7Njtig7fKaPDfotU6huOa1alds/edit
-// TODO:
-//   Value.Export(v) --> inverse of Context.Create()
-//   Proxy objects
-// CXXFLAGS: -I${SRCDIR} -I${SRCDIR}/include -fpic -std=c++11
-
-// BUG(aroman) Unhandled promise rejections are silently dropped
-// (see https://github.com/augustoroman/v8/issues/21)
-
-// #include <stdlib.h>
-// #include <string.h>
 // #include "v8_c_bridge.h"
 // #cgo CXXFLAGS: -I${SRCDIR} -I${SRCDIR}/include -g3 -fpic -std=c++11
 // #cgo LDFLAGS: -pthread -L${SRCDIR}/libv8 -lv8_base -lv8_init -lv8_initializers -lv8_libbase -lv8_libplatform -lv8_libsampler -lv8_nosnapshot
