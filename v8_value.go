@@ -95,6 +95,16 @@ func (v *Value) GetInternalFieldCount() int {
 	return int(C.v8_Object_GetInternalFieldCount(v.context.pointer, v.pointer))
 }
 
+func (v *Value) Bind(self *Value, argv ...*Value) (*Value, error) {
+	if bind, err := v.Get("bind"); err != nil {
+		return nil, err
+	} else if fn, err := bind.Call(v, argv...); err != nil {
+		return nil, err
+	} else {
+		return fn, nil
+	}
+}
+
 func (v *Value) Call(self *Value, argv ...*Value) (*Value, error) {
 	pargv := make([]C.ValuePtr, len(argv)+1)
 	for i, argvi := range argv {
