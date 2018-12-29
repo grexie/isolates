@@ -1,7 +1,7 @@
 package v8
 
 // #include "v8_c_bridge.h"
-// #cgo CXXFLAGS: -I${SRCDIR} -I${SRCDIR}/include -g3 -fpic -std=c++11
+// #cgo CXXFLAGS: -I${SRCDIR} -I${SRCDIR}/include -g3 -fno-rtti -fpic -std=c++11
 // #cgo LDFLAGS: -pthread -L${SRCDIR}/libv8 -lv8_base -lv8_init -lv8_initializers -lv8_libbase -lv8_libplatform -lv8_libsampler -lv8_nosnapshot
 import "C"
 
@@ -20,7 +20,7 @@ type callbackArgs struct {
 	Holder  *Value
 }
 
-func FunctionCallbackHandler(context *Context, info *C.CallbackInfo, args *callbackArgs, functionId ID) (*Value, error) {
+func FunctionCallbackHandler(context *Context, info *C.CallbackInfo, args *callbackArgs, functionId id) (*Value, error) {
 	functionRef := context.functions.Get(functionId)
 	if functionRef == nil {
 		panic(fmt.Errorf("missing function pointer during callback for function #%d", functionId))
@@ -44,7 +44,7 @@ func FunctionCallbackHandler(context *Context, info *C.CallbackInfo, args *callb
 	})
 }
 
-func GetterCallbackHandler(context *Context, info *C.CallbackInfo, args *callbackArgs, accessorId ID) (*Value, error) {
+func GetterCallbackHandler(context *Context, info *C.CallbackInfo, args *callbackArgs, accessorId id) (*Value, error) {
 	accessorRef := context.accessors.Get(accessorId)
 	if accessorRef == nil {
 		panic(fmt.Errorf("missing function pointer during callback for getter #%d", accessorId))
@@ -60,7 +60,7 @@ func GetterCallbackHandler(context *Context, info *C.CallbackInfo, args *callbac
 	})
 }
 
-func SetterCallbackHandler(context *Context, info *C.CallbackInfo, args *callbackArgs, accessorId ID) (*Value, error) {
+func SetterCallbackHandler(context *Context, info *C.CallbackInfo, args *callbackArgs, accessorId id) (*Value, error) {
 	accessorRef := context.accessors.Get(accessorId)
 	if accessorRef == nil {
 		panic(fmt.Errorf("missing function pointer during callback for setter #%d", accessorId))
@@ -79,7 +79,7 @@ func SetterCallbackHandler(context *Context, info *C.CallbackInfo, args *callbac
 	})
 }
 
-var callbackHandlers = map[C.CallbackType]func(*Context, *C.CallbackInfo, *callbackArgs, ID) (*Value, error){
+var callbackHandlers = map[C.CallbackType]func(*Context, *C.CallbackInfo, *callbackArgs, id) (*Value, error){
 	C.kFunctionCallback: FunctionCallbackHandler,
 	C.kGetterCallback:   GetterCallbackHandler,
 	C.kSetterCallback:   SetterCallbackHandler,
@@ -93,19 +93,20 @@ func CallbackHandler(info *C.CallbackInfo) (r C.ValueTuple) {
 		}
 	}()
 
-	id := C.GoStringN(info.id.data, info.id.length)
-	parts := strings.SplitN(id, ":", 3)
+	ids := C.GoStringN(info.id.data, info.id.length)
+
+	parts := strings.SplitN(ids, ":", 3)
 	isolateId, _ := strconv.Atoi(parts[0])
 	contextId, _ := strconv.Atoi(parts[1])
 	callbackId, _ := strconv.Atoi(parts[2])
 
-	isolateRef := isolates.Get(ID(isolateId))
+	isolateRef := isolates.Get(id(isolateId))
 	if isolateRef == nil {
 		panic(fmt.Errorf("missing isolate pointer during callback for isolate #%d", isolateId))
 	}
 	isolate := isolateRef.(*Isolate)
 
-	contextRef := isolate.contexts.Get(ID(contextId))
+	contextRef := isolate.contexts.Get(id(contextId))
 	if contextRef == nil {
 		panic(fmt.Errorf("missing context pointer during callback for context #%d", contextId))
 	}
@@ -113,6 +114,7 @@ func CallbackHandler(info *C.CallbackInfo) (r C.ValueTuple) {
 
 	defer func() {
 		if v := recover(); v != nil {
+			fmt.Printf("%+v\n", v)
 			debug.PrintStack()
 			err := fmt.Sprintf("%+v", v)
 			r.error = C.Error{data: C.CString(err), length: C.int(len(err))}
@@ -130,7 +132,7 @@ func CallbackHandler(info *C.CallbackInfo) (r C.ValueTuple) {
 	holder, _ := context.newValueFromTuple(info.holder)
 
 	args := &callbackArgs{context, callerInfo, self, holder}
-	v, err := callbackHandlers[info._type](context, info, args, ID(callbackId))
+	v, err := callbackHandlers[info._type](context, info, args, id(callbackId))
 
 	if err != nil {
 		m := err.Error()

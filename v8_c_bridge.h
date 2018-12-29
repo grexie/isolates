@@ -21,6 +21,7 @@ typedef void* FunctionTemplatePtr;
 typedef void* ObjectTemplatePtr;
 typedef void* PrivatePtr;
 typedef void* ExternalPtr;
+typedef void* ResolverPtr;
 
 typedef struct {
     const char* data;
@@ -147,7 +148,7 @@ extern StartupData v8_CreateSnapshotDataBlob(const char* js);
 extern IsolatePtr v8_Isolate_New(StartupData data);
 extern void v8_Isolate_Terminate(IsolatePtr isolate);
 extern void v8_Isolate_Release(IsolatePtr isolate);
-
+extern void v8_Isolate_RequestGarbageCollectionForTesting(IsolatePtr pIsolate);
 extern HeapStatistics v8_Isolate_GetHeapStatistics(IsolatePtr isolate);
 extern void v8_Isolate_LowMemoryNotification(IsolatePtr isolate);
 
@@ -191,14 +192,15 @@ typedef struct {
 
 extern ValuePtr v8_Context_Create(ContextPtr ctx, ImmediateValue val);
 
+extern void        v8_Value_SetWeak(ContextPtr pContext, ValuePtr pValue, const char* id);
 extern ValueTuple  v8_Value_Get(ContextPtr ctx, ValuePtr value, const char* field);
 extern Error       v8_Value_Set(ContextPtr ctx, ValuePtr value,
                                 const char* field, ValuePtr new_value);
-extern Error v8_Value_DefineProperty(ContextPtr ctxptr, ValuePtr valueptr, const char* key, ValuePtr getptr, ValuePtr setptr, bool enumerable, bool configurable);
+extern Error       v8_Value_DefineProperty(ContextPtr ctxptr, ValuePtr valueptr, const char* key, ValuePtr getptr, ValuePtr setptr, bool enumerable, bool configurable);
 extern ValueTuple  v8_Value_GetIndex(ContextPtr ctx, ValuePtr value, int idx);
-extern ValueTuple v8_Object_GetInternalField(ContextPtr pContext, ValuePtr pValue, int field);
+extern int64_t  v8_Object_GetInternalField(ContextPtr pContext, ValuePtr pValue, int field);
 extern Error       v8_Value_SetIndex(ContextPtr ctx, ValuePtr value, int idx, ValuePtr new_value);
-extern void v8_Object_SetInternalField(ContextPtr ctxptr, ValuePtr value_ptr, int field, ValuePtr external_ptr);
+extern void v8_Object_SetInternalField(ContextPtr ctxptr, ValuePtr value_ptr, int field, uint32_t newValue);
 extern Error v8_Value_SetPrivate(ContextPtr ctxptr, ValuePtr valueptr, PrivatePtr privateptr, ValuePtr new_valueptr);
 extern ValueTuple v8_Value_GetPrivate(ContextPtr ctxptr, ValuePtr valueptr, PrivatePtr privateptr);
 extern Error v8_Value_DeletePrivate(ContextPtr ctxptr, ValuePtr valueptr, PrivatePtr privateptr);
@@ -215,8 +217,12 @@ extern int64_t   v8_Value_Int64(ContextPtr ctx, ValuePtr value);
 extern int       v8_Value_Bool(ContextPtr ctx, ValuePtr value);
 extern ByteArray v8_Value_Bytes(ContextPtr ctx, ValuePtr value);
 
-extern ValueTuple v8_Value_PromiseInfo(ContextPtr ctx, ValuePtr value,
-                                       int* promise_state);
+extern ResolverPtr v8_Promise_NewResolver(ContextPtr pContext);
+extern Error v8_Resolver_Resolve(ContextPtr pContext, ResolverPtr pResolver, ValuePtr pValue);
+extern Error v8_Resolver_Reject(ContextPtr pContext, ResolverPtr pResolver, ValuePtr pValue);
+extern ValuePtr v8_Resolver_GetPromise(ContextPtr pContext, ResolverPtr pResolver);
+extern void v8_Resolver_Release(ContextPtr pContext, ResolverPtr pResolver);
+extern ValueTuple v8_Value_PromiseInfo(ContextPtr ctx, ValuePtr value, int* promise_state);
 
 extern PrivatePtr v8_Private_New(IsolatePtr isoptr, const char *name);
 
@@ -224,7 +230,10 @@ extern InspectorPtr v8_Inspector_New(IsolatePtr isolate_ptr, int id);
 extern void v8_Inspector_AddContext(InspectorPtr inspector_ptr, ContextPtr ctxptr, const char* name);
 extern void v8_Inspector_RemoveContext(InspectorPtr inspector_ptr, ContextPtr ctxptr);
 extern void v8_Inspector_DispatchMessage(InspectorPtr inspector_ptr, const char* message);
+extern void v8_Inspector_Release(InspectorPtr pInspector);
 
+extern ValueTuple v8_JSON_Parse(ContextPtr pContext, const char* data);
+extern ValueTuple v8_JSON_Stringify(ContextPtr pContext, ValuePtr pValue);
 
 #ifdef __cplusplus
 }

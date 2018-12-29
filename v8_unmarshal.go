@@ -1,7 +1,7 @@
 package v8
 
 // #include "v8_c_bridge.h"
-// #cgo CXXFLAGS: -I${SRCDIR} -I${SRCDIR}/include -g3 -fpic -std=c++11
+// #cgo CXXFLAGS: -I${SRCDIR} -I${SRCDIR}/include -g3 -fno-rtti -fpic -std=c++11
 // #cgo LDFLAGS: -pthread -L${SRCDIR}/libv8 -lv8_base -lv8_init -lv8_initializers -lv8_libbase -lv8_libplatform -lv8_libsampler -lv8_nosnapshot
 import "C"
 
@@ -11,6 +11,11 @@ import (
 )
 
 func (v *Value) Unmarshal(t reflect.Type) *reflect.Value {
+	if t == valueType {
+		v := reflect.ValueOf(v)
+		return &v
+	}
+
 	switch t.Kind() {
 	case reflect.Bool:
 		v := reflect.ValueOf(v.Bool()).Convert(t)

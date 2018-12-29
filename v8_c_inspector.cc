@@ -15,6 +15,8 @@ String StringFromStringView(v8::Isolate* isolate, const v8_inspector::StringView
   return v8_String_Create(s.ToLocalChecked());
 }
 
+
+
 class Inspector : public v8_inspector::V8Inspector::Channel, public v8_inspector::V8InspectorClient {
 public:
   Inspector(v8::Isolate* isolate, int inspectorId) : isolate_(isolate), inspectorId_(inspectorId) {
@@ -83,8 +85,8 @@ void Inspector::runMessageLoopOnPause(int contextGroupId) {
 	while (!terminated_) {
     bool more = true;
 		while (more) {
-      ISOLATE_SCOPE(isolate_);
-      more = v8::platform::PumpMessageLoop(platform, isolate);
+      //ISOLATE_SCOPE(isolate_);
+      more = v8::platform::PumpMessageLoop(platform, isolate_);
     }
 	}
 
@@ -123,5 +125,10 @@ extern "C" {
 
     v8_inspector::StringView messageView((const uint8_t*)message, strlen(message));
     inspector->dispatchProtocolMessage(messageView);
+  }
+
+  void v8_Inspector_Release(InspectorPtr pInspector) {
+    Inspector *inspector = static_cast<Inspector*>(pInspector);
+    delete inspector;
   }
 }

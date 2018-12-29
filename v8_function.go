@@ -1,12 +1,14 @@
 package v8
 
 // #include "v8_c_bridge.h"
-// #cgo CXXFLAGS: -I${SRCDIR} -I${SRCDIR}/include -g3 -fpic -std=c++11
+// #cgo CXXFLAGS: -I${SRCDIR} -I${SRCDIR}/include -g3 -fno-rtti -fpic -std=c++11
 // #cgo LDFLAGS: -pthread -L${SRCDIR}/libv8 -lv8_base -lv8_init -lv8_initializers -lv8_libbase -lv8_libplatform -lv8_libsampler -lv8_nosnapshot
 import "C"
 
 import (
 	"fmt"
+	"log"
+	"reflect"
 	"runtime"
 	"unsafe"
 )
@@ -21,6 +23,8 @@ type CallerInfo struct {
 type FunctionTemplate struct {
 	context *Context
 	pointer C.FunctionTemplatePtr
+	info    *functionInfo
+	value   *Value
 }
 
 type ObjectTemplate struct {
@@ -66,30 +70,21 @@ type SetterArgs struct {
 }
 
 type functionInfo struct {
+	referenceObject
+
 	Function
-	id ID
+}
+
+func (fi *functionInfo) String() string {
+	name := runtime.FuncForPC(reflect.ValueOf(fi.Function).Pointer()).Name()
+	return fmt.Sprintf("function {%d %p %s}", fi.getID("f"), fi.Function, name)
 }
 
 type accessorInfo struct {
+	referenceObject
+
 	Getter
 	Setter
-	id ID
-}
-
-func (i *functionInfo) GetID() ID {
-	return i.id
-}
-
-func (i *functionInfo) SetID(id ID) {
-	i.id = id
-}
-
-func (i *accessorInfo) GetID() ID {
-	return i.id
-}
-
-func (i *accessorInfo) SetID(id ID) {
-	i.id = id
 }
 
 func (c *Context) NewFunctionTemplate(cb Function) *FunctionTemplate {
@@ -99,13 +94,16 @@ func (c *Context) NewFunctionTemplate(cb Function) *FunctionTemplate {
 	cid := c.ref()
 	defer c.unref()
 
-	id := c.functions.Ref(&functionInfo{cb, 0})
+	info := &functionInfo{
+		Function: cb,
+	}
+	id := c.functions.Ref(info)
 	pid := C.CString(fmt.Sprintf("%d:%d:%d", iid, cid, id))
 	defer C.free(unsafe.Pointer(pid))
 
 	pf := C.v8_FunctionTemplate_New(c.pointer, pid)
 
-	f := &FunctionTemplate{c, pf}
+	f := &FunctionTemplate{c, pf, info, nil}
 	runtime.SetFinalizer(f, (*FunctionTemplate).release)
 	return f
 }
@@ -135,12 +133,20 @@ func (f *FunctionTemplate) SetHiddenPrototype(value bool) {
 }
 
 func (f *FunctionTemplate) GetFunction() *Value {
-	f.context.ref()
-	defer f.context.unref()
+	if f.value == nil {
+		pv := C.v8_FunctionTemplate_GetFunction(f.context.pointer, f.pointer)
+		f.value = f.context.newValue(pv, unionKindFunction)
 
-	pv := C.v8_FunctionTemplate_GetFunction(f.context.pointer, f.pointer)
+		f.value.created = true
+		f.value.AddFinalizer(func(c *Context, i *functionInfo) func() {
+			return func() {
+				log.Println("WeakCallback:finalizer")
+				c.functions.Release(i)
+			}
+		}(f.context, f.info))
+	}
 
-	return f.context.newValue(pv, unionKindFunction)
+	return f.value
 }
 
 func (f *FunctionTemplate) GetInstanceTemplate() *ObjectTemplate {
@@ -165,6 +171,9 @@ func (f *FunctionTemplate) release() {
 		C.v8_FunctionTemplate_Release(f.context.pointer, f.pointer)
 		f.context.unref()
 	}
+
+	f.info = nil
+	f.value = nil
 	f.context = nil
 	f.pointer = nil
 	runtime.SetFinalizer(f, nil)
@@ -184,7 +193,10 @@ func (o *ObjectTemplate) SetAccessor(name string, getter Getter, setter Setter) 
 	cid := o.context.ref()
 	defer o.context.unref()
 
-	id := o.context.accessors.Ref(&accessorInfo{getter, setter, 0})
+	id := o.context.accessors.Ref(&accessorInfo{
+		Getter: getter,
+		Setter: setter,
+	})
 	pid := C.CString(fmt.Sprintf("%d:%d:%d", iid, cid, id))
 	defer C.free(unsafe.Pointer(pid))
 

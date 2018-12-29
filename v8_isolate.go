@@ -1,21 +1,23 @@
 package v8
 
 // #include "v8_c_bridge.h"
-// #cgo CXXFLAGS: -I${SRCDIR} -I${SRCDIR}/include -g3 -fpic -std=c++11
+// #cgo CXXFLAGS: -I${SRCDIR} -I${SRCDIR}/include -g3 -fno-rtti -fpic -std=c++11
 // #cgo LDFLAGS: -pthread -L${SRCDIR}/libv8 -lv8_base -lv8_init -lv8_initializers -lv8_libbase -lv8_libplatform -lv8_libsampler -lv8_nosnapshot
 import "C"
 
 import (
 	"errors"
+	"reflect"
 	"runtime"
 	"sync"
 	"unsafe"
 )
 
 type Isolate struct {
+	referenceObject
 	pointer  C.IsolatePtr
-	contexts *ReferenceMap
-	id       ID
+	contexts *referenceMap
+	tracer   tracer
 }
 
 type Snapshot struct {
@@ -35,7 +37,7 @@ type HeapStatistics struct {
 }
 
 var initOnce sync.Once
-var isolates = NewReferenceMap()
+var isolates = newReferenceMap("i", reflect.TypeOf(&Isolate{}))
 
 func NewIsolate() *Isolate {
 	initOnce.Do(func() {
@@ -43,10 +45,11 @@ func NewIsolate() *Isolate {
 	})
 
 	isolate := &Isolate{
-		C.v8_Isolate_New(C.StartupData{data: nil, length: 0}),
-		NewReferenceMap(),
-		0,
+		pointer:  C.v8_Isolate_New(C.StartupData{data: nil, length: 0}),
+		contexts: newReferenceMap("c", reflect.TypeOf(&Context{})),
+		tracer:   &nullTracer{},
 	}
+	isolate.ref()
 	runtime.SetFinalizer(isolate, (*Isolate).release)
 
 	return isolate
@@ -58,24 +61,17 @@ func NewIsolateWithSnapshot(snapshot *Snapshot) *Isolate {
 	})
 
 	isolate := &Isolate{
-		C.v8_Isolate_New(snapshot.data),
-		NewReferenceMap(),
-		0,
+		pointer:  C.v8_Isolate_New(snapshot.data),
+		contexts: newReferenceMap("c", reflect.TypeOf(&Context{})),
+		tracer:   &nullTracer{},
 	}
+	isolate.ref()
 	runtime.SetFinalizer(isolate, (*Isolate).release)
 
 	return isolate
 }
 
-func (i *Isolate) GetID() ID {
-	return i.id
-}
-
-func (i *Isolate) SetID(id ID) {
-	i.id = id
-}
-
-func (i *Isolate) ref() ID {
+func (i *Isolate) ref() id {
 	return isolates.Ref(i)
 }
 
@@ -83,8 +79,13 @@ func (i *Isolate) unref() {
 	isolates.Unref(i)
 }
 
+func (i *Isolate) RequestGarbageCollectionForTesting() {
+	C.v8_Isolate_RequestGarbageCollectionForTesting(i.pointer)
+}
+
 func (i *Isolate) Terminate() {
 	C.v8_Isolate_Terminate(i.pointer)
+	i.release()
 }
 
 func (i *Isolate) SendLowMemoryNotification() {
@@ -119,6 +120,7 @@ func (i *Isolate) newError(err C.Error) error {
 func (i *Isolate) release() {
 	C.v8_Isolate_Release(i.pointer)
 	i.pointer = nil
+	isolates.Release(i)
 	runtime.SetFinalizer(i, nil)
 }
 

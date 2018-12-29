@@ -1,7 +1,7 @@
 package v8
 
 // #include "v8_c_bridge.h"
-// #cgo CXXFLAGS: -I${SRCDIR} -I${SRCDIR}/include -g3 -fpic -std=c++11
+// #cgo CXXFLAGS: -I${SRCDIR} -I${SRCDIR}/include -g3 -fno-rtti -fpic -std=c++11
 // #cgo LDFLAGS: -pthread -L${SRCDIR}/libv8 -lv8_base -lv8_init -lv8_initializers -lv8_libbase -lv8_libplatform -lv8_libsampler -lv8_nosnapshot
 import "C"
 
@@ -30,7 +30,7 @@ func (i *Isolate) NewInspector(callbacks InspectorCallbacks) *Inspector {
 	nextInspectorID++
 	inspector := &Inspector{C.v8_Inspector_New(i.pointer, C.int(inspectorID)), inspectorID, callbacks}
 	inspectors[inspectorID] = inspector
-	runtime.SetFinalizer(inspector, (*Inspector).release)
+	runtime.SetFinalizer(inspector, (*Inspector).Release)
 	return inspector
 }
 
@@ -53,8 +53,13 @@ func (i *Inspector) DispatchMessage(message string) {
 	C.free(unsafe.Pointer(messageCStr))
 }
 
-func (i *Inspector) release() {
+func (i *Inspector) Release() {
 	// TODO remove all contexts that have been referenced in AddContext, RemoveContext
+	if i.ptr != nil {
+		C.v8_Inspector_Release(i.ptr)
+	}
+	i.ptr = nil
+
 	delete(inspectors, i.id)
 }
 

@@ -1,7 +1,31 @@
 
 #include "v8_c_private.h"
 
+extern "C" void ValueWeakCallbackHandler(String id);
+
+typedef struct {
+  String id;
+} WeakCallbackParameter;
+
+void ValueWeakCallback(const v8::WeakCallbackInfo<WeakCallbackParameter>& data) {
+  WeakCallbackParameter* param = data.GetParameter();
+
+  ValueWeakCallbackHandler(param->id);
+
+  delete param->id.data;
+  delete param;
+}
+
 extern "C" {
+
+  void v8_Value_SetWeak(ContextPtr pContext, ValuePtr pValue, const char* id) {
+    VALUE_SCOPE(pContext);
+
+    WeakCallbackParameter* param = new WeakCallbackParameter{v8_String_Create(id)};
+
+    Value* value = static_cast<Value*>(pValue);
+    value->SetWeak(param, ValueWeakCallback, v8::WeakCallbackType::kParameter);
+  }
 
   ValueTuple v8_Value_Get(ContextPtr pContext, ValuePtr pObject, const char* field) {
     VALUE_SCOPE(pContext);
@@ -37,18 +61,24 @@ extern "C" {
     }
   }
 
-  ValueTuple v8_Object_GetInternalField(ContextPtr pContext, ValuePtr pValue, int field) {
+  int64_t v8_Object_GetInternalField(ContextPtr pContext, ValuePtr pValue, int field) {
     VALUE_SCOPE(pContext);
 
     Value* value = static_cast<Value*>(pValue);
     v8::Local<v8::Value> maybeObject = value->Get(isolate);
     if (!maybeObject->IsObject()) {
-      return v8_Value_ValueTuple_Error(v8_String_FromString(isolate, "Not an object"));
+      return 0;
     }
 
     v8::Local<v8::Object> object = maybeObject->ToObject(context).ToLocalChecked();
     v8::Local<v8::Value> result = object->GetInternalField(field);
-    return v8_Value_ValueTuple(isolate, result);
+    v8::Maybe<int64_t> maybe = result->IntegerValue(context);
+
+    if (maybe.IsNothing()) {
+      return 0;
+    }
+
+    return maybe.ToChecked();
   }
 
   Error v8_Value_Set(ContextPtr pContext, ValuePtr pValue, const char* field, ValuePtr pNewValue) {
@@ -105,7 +135,7 @@ extern "C" {
     return Error{NULL, 0};
   }
 
-  void v8_Object_SetInternalField(ContextPtr pContext, ValuePtr pValue, int field, ValuePtr pNewValue) {
+  void v8_Object_SetInternalField(ContextPtr pContext, ValuePtr pValue, int field, uint32_t newValue) {
     VALUE_SCOPE(pContext);
 
     Value* value = static_cast<Value*>(pValue);
@@ -114,10 +144,8 @@ extern "C" {
       return;
     }
 
-    v8::Local<v8::Value> newValue = static_cast<Value*>(pNewValue)->Get(isolate);
-
     v8::Local<v8::Object> object = maybeObject->ToObject(context).ToLocalChecked();
-    object->SetInternalField(field, newValue);
+    object->SetInternalField(field, v8::Integer::New(isolate, newValue));
   }
 
   int v8_Object_GetInternalFieldCount(ContextPtr pContext, ValuePtr pValue) {
@@ -331,17 +359,17 @@ extern "C" {
 
     v8::Local<v8::Value> value = static_cast<Value*>(pValue)->Get(isolate);
 
-    v8::ArrayBuffer* arrayBuffer;
+    v8::Local<v8::ArrayBuffer> arrayBuffer;
 
     if (value->IsTypedArray()) {
-      arrayBuffer = *v8::TypedArray::Cast(*value)->Buffer();
+      arrayBuffer = v8::Local<v8::TypedArray>::Cast(value)->Buffer();
     } else if (value->IsArrayBuffer()) {
-      arrayBuffer = v8::ArrayBuffer::Cast(*value);
+      arrayBuffer = v8::Local<v8::ArrayBuffer>::Cast(value);
     } else {
       return ByteArray{ NULL, 0 };
     }
 
-    if (arrayBuffer == NULL) {
+    if (arrayBuffer.IsEmpty()) {
       return ByteArray{ NULL, 0 };
     }
 
@@ -349,35 +377,6 @@ extern "C" {
       static_cast<const char*>(arrayBuffer->GetContents().Data()),
       static_cast<int>(arrayBuffer->GetContents().ByteLength())
     };
-  }
-
-  HeapStatistics v8_Isolate_GetHeapStatistics(IsolatePtr pIsolate) {
-    if (pIsolate == NULL) {
-      return HeapStatistics{0};
-    }
-    ISOLATE_SCOPE(static_cast<v8::Isolate*>(pIsolate));
-
-    v8::HeapStatistics hs;
-    isolate->GetHeapStatistics(&hs);
-    return HeapStatistics{
-      hs.total_heap_size(),
-      hs.total_heap_size_executable(),
-      hs.total_physical_size(),
-      hs.total_available_size(),
-      hs.used_heap_size(),
-      hs.heap_size_limit(),
-      hs.malloced_memory(),
-      hs.peak_malloced_memory(),
-      hs.does_zap_garbage()
-    };
-  }
-
-  void v8_Isolate_LowMemoryNotification(IsolatePtr pIsolate) {
-    if (pIsolate == NULL) {
-      return;
-    }
-    ISOLATE_SCOPE(static_cast<v8::Isolate*>(pIsolate));
-    isolate->LowMemoryNotification();
   }
 
   ValueTuple v8_Value_PromiseInfo(ContextPtr pContext, ValuePtr pValue, int* promiseState) {
@@ -404,6 +403,32 @@ extern "C" {
 
     v8::Local<v8::Private> _private = v8::Private::New(isolate, v8::String::NewFromUtf8(isolate, name));
     return static_cast<PrivatePtr>(new Private(isolate, _private));
+  }
+
+  ValueTuple v8_JSON_Parse(ContextPtr pContext, const char* data) {
+    VALUE_SCOPE(pContext);
+
+    v8::Local<v8::String> jsonString = v8_String_FromString(isolate, data);
+    v8::MaybeLocal<v8::Value> maybeValue = v8::JSON::Parse(context, jsonString);
+
+    if (maybeValue.IsEmpty()) {
+      return v8_Value_ValueTuple_Error(v8_String_FromString(isolate, "json parse gave an empty result"));
+    }
+
+    return v8_Value_ValueTuple(isolate, maybeValue.ToLocalChecked());
+  }
+
+  ValueTuple v8_JSON_Stringify(ContextPtr pContext, ValuePtr pValue) {
+    VALUE_SCOPE(pContext);
+
+    v8::Local<v8::Value> value = static_cast<Value*>(pValue)->Get(isolate);
+    v8::MaybeLocal<v8::String> maybeJson = v8::JSON::Stringify(context, value);
+
+    if (maybeJson.IsEmpty()) {
+      return v8_Value_ValueTuple_Error(v8_String_FromString(isolate, "json stringify gave an empty result"));
+    }
+
+    return v8_Value_ValueTuple(isolate, maybeJson.ToLocalChecked());
   }
 
 }

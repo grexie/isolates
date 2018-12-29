@@ -1,64 +1,144 @@
 package v8
 
-import "sync"
+import (
+	"reflect"
+	"sync"
+	"unsafe"
+)
 
-type ID uint32
+type id uint32
 
-type Reference interface {
-	GetID() ID
-	SetID(id ID)
+type reference interface {
+	getID(name string) id
+	setID(name string, id id)
 }
 
-type entry struct {
-	reference Reference
-	count     uint32
+type referenceObject struct {
+	ids map[string]id
 }
 
-type ReferenceMap struct {
-	entries map[ID]*entry
-	nextId  ID
-	mutex   sync.RWMutex
-}
+func (o *referenceObject) getID(name string) id {
+	if o.ids == nil {
+		return 0
+	}
 
-func NewReferenceMap() *ReferenceMap {
-	return &ReferenceMap{
-		entries: map[ID]*entry{},
+	if id, ok := o.ids[name]; !ok {
+		return 0
+	} else {
+		return id
 	}
 }
 
-func (rm *ReferenceMap) Get(id ID) Reference {
+func (o *referenceObject) setID(name string, i id) {
+	if o.ids == nil {
+		o.ids = map[string]id{}
+	}
+
+	o.ids[name] = i
+}
+
+type entry struct {
+	pointer   uintptr
+	reference unsafe.Pointer
+	count     uint32
+}
+
+type referenceMap struct {
+	name          string
+	entries       map[id]*entry
+	referenceType reflect.Type
+	nextId        id
+	mutex         sync.RWMutex
+	strong        bool
+}
+
+func newReferenceMap(name string, referenceType reflect.Type) *referenceMap {
+	return &referenceMap{
+		name:          name,
+		entries:       map[id]*entry{},
+		referenceType: referenceType,
+		strong:        true,
+	}
+}
+
+func newWeakReferenceMap(name string, referenceType reflect.Type) *referenceMap {
+	return &referenceMap{
+		name:          name,
+		entries:       map[id]*entry{},
+		referenceType: referenceType,
+		strong:        false,
+	}
+}
+
+func (rm *referenceMap) References() []reference {
 	rm.mutex.RLock()
 	defer rm.mutex.RUnlock()
 
-	return rm.entries[id].reference
+	refs := make([]reference, len(rm.entries))
+	i := 0
+	for _, entry := range rm.entries {
+		refs[i] = reflect.NewAt(rm.referenceType.Elem(), unsafe.Pointer(entry.pointer)).Interface().(reference)
+		i++
+	}
+	return refs
 }
 
-func (rm *ReferenceMap) Ref(r Reference) ID {
+func (rm *referenceMap) Length() int {
+	rm.mutex.RLock()
+	defer rm.mutex.RUnlock()
+
+	return len(rm.entries)
+}
+
+func (rm *referenceMap) Get(id id) reference {
+	rm.mutex.RLock()
+	defer rm.mutex.RUnlock()
+
+	return reflect.NewAt(rm.referenceType.Elem(), unsafe.Pointer(rm.entries[id].pointer)).Interface().(reference)
+}
+
+func (rm *referenceMap) Ref(r reference) id {
 	rm.mutex.Lock()
 	defer rm.mutex.Unlock()
 
 	var e *entry
-	id := r.GetID()
+	id := r.getID(rm.name)
 	if id == 0 {
 		rm.nextId++
 		id = rm.nextId
+		r.setID(rm.name, id)
 	}
 	if e = rm.entries[id]; e == nil {
-		e = &entry{r, 0}
-		rm.entries[id] = e
+		if rm.strong {
+			e = &entry{reflect.ValueOf(r).Pointer(), unsafe.Pointer(reflect.ValueOf(r).Pointer()), 0}
+			rm.entries[id] = e
+		} else {
+			e = &entry{reflect.ValueOf(r).Pointer(), nil, 0}
+			rm.entries[id] = e
+		}
 	}
 	e.count++
 	return id
 }
 
-func (rm *ReferenceMap) Unref(r Reference) {
+func (rm *referenceMap) Unref(r reference) {
 	rm.mutex.Lock()
 	defer rm.mutex.Unlock()
 
-	id := r.GetID()
-	if e := rm.entries[id]; e == nil || e.count <= 1 {
+	id := r.getID(rm.name)
+	if e, ok := rm.entries[id]; ok && e.count <= 1 {
 		delete(rm.entries, id)
-	} else {
+	} else if ok {
 		e.count--
+	}
+}
+
+func (rm *referenceMap) Release(r reference) {
+	rm.mutex.Lock()
+	defer rm.mutex.Unlock()
+
+	id := r.getID(rm.name)
+	if _, ok := rm.entries[id]; ok {
+		delete(rm.entries, id)
 	}
 }

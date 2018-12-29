@@ -1,41 +1,57 @@
 package v8
 
 // #include "v8_c_bridge.h"
-// #cgo CXXFLAGS: -I${SRCDIR} -I${SRCDIR}/include -g3 -fpic -std=c++11
+// #cgo CXXFLAGS: -I${SRCDIR} -I${SRCDIR}/include -g3 -fno-rtti -fpic -std=c++11
 // #cgo LDFLAGS: -pthread -L${SRCDIR}/libv8 -lv8_base -lv8_init -lv8_initializers -lv8_libbase -lv8_libplatform -lv8_libsampler -lv8_nosnapshot
 import "C"
 
 import (
-	"fmt"
 	"reflect"
 	"runtime"
+	"sync"
 	"unsafe"
 )
 
 type Context struct {
-	id        ID
+	referenceObject
+
 	isolate   *Isolate
 	pointer   C.ContextPtr
+	global    *Value
 	undefined *Value
+	null      *Value
+	vfalse    *Value
+	vtrue     *Value
 
-	functions *ReferenceMap
-	accessors *ReferenceMap
-	values    *ReferenceMap
+	functionCache map[uintptr]*Value
+	functions     *referenceMap
+	accessors     *referenceMap
+	values        *referenceMap
+	refs          *referenceMap
+	objects       map[uintptr]*Value
 
 	baseConstructor *FunctionTemplate
 	constructors    map[reflect.Type]*FunctionTemplate
+
+	weakCallbacks     map[string]*weakCallbackInfo
+	weakCallbackMutex sync.Mutex
 }
 
 func (i *Isolate) NewContext() *Context {
 	context := &Context{
-		isolate:      i,
-		pointer:      C.v8_Context_New(i.pointer),
-		functions:    NewReferenceMap(),
-		accessors:    NewReferenceMap(),
-		values:       NewReferenceMap(),
-		constructors: map[reflect.Type]*FunctionTemplate{},
+		isolate:       i,
+		pointer:       C.v8_Context_New(i.pointer),
+		functions:     newReferenceMap("f", reflect.TypeOf(&functionInfo{})),
+		accessors:     newReferenceMap("a", reflect.TypeOf(&accessorInfo{})),
+		values:        newReferenceMap("v", reflect.TypeOf(&valueRef{})),
+		refs:          newReferenceMap("v", reflect.TypeOf(&Value{})),
+		objects:       map[uintptr]*Value{},
+		constructors:  map[reflect.Type]*FunctionTemplate{},
+		weakCallbacks: map[string]*weakCallbackInfo{},
 	}
+	context.ref()
 	runtime.SetFinalizer(context, (*Context).release)
+	i.tracer.AddContext(context)
 	return context
 }
 
@@ -43,15 +59,7 @@ func (c *Context) GetIsolate() *Isolate {
 	return c.isolate
 }
 
-func (c *Context) GetID() ID {
-	return c.id
-}
-
-func (c *Context) SetID(id ID) {
-	c.id = id
-}
-
-func (c *Context) ref() ID {
+func (c *Context) ref() id {
 	return c.isolate.contexts.Ref(c)
 }
 
@@ -75,33 +83,52 @@ func (c *Context) Run(code string, filename string) (*Value, error) {
 
 func (c *Context) Undefined() *Value {
 	if c.undefined == nil {
-		c.undefined, _ = c.Create(nil)
+		c.undefined = c.newValue(C.v8_Context_Create(c.pointer, C.ImmediateValue{_type: C.tUNDEFINED}), C.Kinds(KindUndefined))
 	}
 	return c.undefined
 }
 
+func (c *Context) Null() *Value {
+	if c.null == nil {
+		c.null = c.newValue(C.v8_Context_Create(c.pointer, C.ImmediateValue{_type: C.tOBJECT}), C.Kinds(KindNull))
+	}
+	return c.null
+}
+
+func (c *Context) False() *Value {
+	if c.vfalse == nil {
+		c.vfalse = c.newValue(C.v8_Context_Create(c.pointer, C.ImmediateValue{_type: C.tBOOL, _bool: false}), C.Kinds(KindBoolean))
+	}
+	return c.vfalse
+}
+
+func (c *Context) True() *Value {
+	if c.vtrue == nil {
+		c.vtrue = c.newValue(C.v8_Context_Create(c.pointer, C.ImmediateValue{_type: C.tBOOL, _bool: true}), C.Kinds(KindBoolean))
+	}
+	return c.vtrue
+}
+
 func (c *Context) Global() *Value {
-	return c.newValue(C.v8_Context_Global(c.pointer), C.Kinds(KindObject))
+	if c.global == nil {
+		c.global = c.newValue(C.v8_Context_Global(c.pointer), C.Kinds(KindObject))
+	}
+	return c.global
 }
 
 func (c *Context) ParseJSON(json string) (*Value, error) {
-	if j, err := c.Global().Get("JSON"); err != nil {
-		return nil, fmt.Errorf("cannot get JSON: %+v", err)
-	} else if jp, err := j.Get("parse"); err != nil {
-		return nil, fmt.Errorf("cannot get JSON.parse: %+v", err)
-	} else if s, err := c.Create(json); err != nil {
-		return nil, err
-	} else {
-		return jp.Call(nil, s)
-	}
+	pjson := C.CString(json)
+	defer C.free(unsafe.Pointer(pjson))
+	return c.newValueFromTuple(C.v8_JSON_Parse(c.pointer, pjson))
 }
 
 func (c *Context) release() {
+	c.isolate.tracer.RemoveContext(c)
 	if c.pointer != nil {
 		C.v8_Context_Release(c.pointer)
 	}
 	c.pointer = nil
-
+	c.isolate.contexts.Release(c)
 	runtime.SetFinalizer(c, nil)
 	c.isolate = nil
 }

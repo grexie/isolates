@@ -29,6 +29,42 @@ extern "C" {
     isolate->TerminateExecution();
   }
 
+	void v8_Isolate_RequestGarbageCollectionForTesting(IsolatePtr pIsolate) {
+		ISOLATE_SCOPE(static_cast<v8::Isolate*>(pIsolate));
+
+		isolate->RequestGarbageCollectionForTesting(v8::Isolate::kFullGarbageCollection);
+	}
+
+	HeapStatistics v8_Isolate_GetHeapStatistics(IsolatePtr pIsolate) {
+    if (pIsolate == NULL) {
+      return HeapStatistics{0};
+    }
+    ISOLATE_SCOPE(static_cast<v8::Isolate*>(pIsolate));
+
+    v8::HeapStatistics hs;
+    isolate->GetHeapStatistics(&hs);
+
+    return HeapStatistics{
+      hs.total_heap_size(),
+      hs.total_heap_size_executable(),
+      hs.total_physical_size(),
+      hs.total_available_size(),
+      hs.used_heap_size(),
+      hs.heap_size_limit(),
+      hs.malloced_memory(),
+      hs.peak_malloced_memory(),
+      hs.does_zap_garbage()
+    };
+  }
+
+  void v8_Isolate_LowMemoryNotification(IsolatePtr pIsolate) {
+    if (pIsolate == NULL) {
+      return;
+    }
+    ISOLATE_SCOPE(static_cast<v8::Isolate*>(pIsolate));
+    isolate->LowMemoryNotification();
+  }
+
   void v8_Isolate_Release(IsolatePtr isolate_ptr) {
     if (isolate_ptr == nullptr) {
       return;

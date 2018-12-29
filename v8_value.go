@@ -1,23 +1,30 @@
 package v8
 
 // #include "v8_c_bridge.h"
-// #cgo CXXFLAGS: -I${SRCDIR} -I${SRCDIR}/include -g3 -fpic -std=c++11
+// #cgo CXXFLAGS: -I${SRCDIR} -I${SRCDIR}/include -g3 -fno-rtti -fpic -std=c++11
 // #cgo LDFLAGS: -pthread -L${SRCDIR}/libv8 -lv8_base -lv8_init -lv8_initializers -lv8_libbase -lv8_libplatform -lv8_libsampler -lv8_nosnapshot
 import "C"
 
 import (
 	"errors"
 	"fmt"
+	"log"
 	"reflect"
 	"runtime"
+	"strconv"
+	"strings"
 	"time"
 	"unsafe"
 )
 
 type Value struct {
-	context *Context
-	pointer C.ValuePtr
-	kinds   kinds
+	referenceObject
+
+	context    *Context
+	pointer    C.ValuePtr
+	kinds      kinds
+	finalizers []func()
+	created    bool
 }
 
 type PropertyDescriptor struct {
@@ -36,14 +43,32 @@ func (c *Context) newValue(pointer C.ValuePtr, k C.Kinds) *Value {
 		return nil
 	}
 
-	v := &Value{c, pointer, kinds(k)}
+	v := &Value{
+		context:    c,
+		pointer:    pointer,
+		kinds:      kinds(k),
+		finalizers: make([]func(), 0),
+	}
+	c.isolate.tracer.AddValue(v)
 
 	runtime.SetFinalizer(v, (*Value).release)
 	return v
 }
 
+func (v *Value) ref() id {
+	return v.context.refs.Ref(v)
+}
+
+func (v *Value) unref() {
+	v.context.refs.Unref(v)
+}
+
 func (v *Value) IsKind(k Kind) bool {
 	return v.kinds.Is(k)
+}
+
+func (v *Value) GetContext() *Context {
+	return v.context
 }
 
 func (v *Value) DefineProperty(key string, descriptor *PropertyDescriptor) error {
@@ -75,18 +100,18 @@ func (v *Value) SetIndex(i int, value *Value) error {
 	return v.context.isolate.newError(C.v8_Value_SetIndex(v.context.pointer, v.pointer, C.int(i), value.pointer))
 }
 
-func (v *Value) SetInternalField(i int, value *Value) {
+func (v *Value) SetInternalField(i int, value uint32) {
 	v.context.ref()
 	defer v.context.unref()
 
-	C.v8_Object_SetInternalField(v.context.pointer, v.pointer, C.int(i), value.pointer)
+	C.v8_Object_SetInternalField(v.context.pointer, v.pointer, C.int(i), C.uint32_t(value))
 }
 
-func (v *Value) GetInternalField(i int) (*Value, error) {
+func (v *Value) GetInternalField(i int) int64 {
 	v.context.ref()
 	defer v.context.unref()
 
-	return v.context.newValueFromTuple(C.v8_Object_GetInternalField(v.context.pointer, v.pointer, C.int(i)))
+	return int64(C.v8_Object_GetInternalField(v.context.pointer, v.pointer, C.int(i)))
 }
 
 func (v *Value) GetInternalFieldCount() int {
@@ -95,7 +120,7 @@ func (v *Value) GetInternalFieldCount() int {
 	return int(C.v8_Object_GetInternalFieldCount(v.context.pointer, v.pointer))
 }
 
-func (v *Value) Bind(self *Value, argv ...*Value) (*Value, error) {
+func (v *Value) Bind(argv ...*Value) (*Value, error) {
 	if bind, err := v.Get("bind"); err != nil {
 		return nil, err
 	} else if fn, err := bind.Call(v, argv...); err != nil {
@@ -121,6 +146,16 @@ func (v *Value) Call(self *Value, argv ...*Value) (*Value, error) {
 
 	vt := C.v8_Value_Call(v.context.pointer, v.pointer, pself, C.int(len(argv)), &pargv[0])
 	return v.context.newValueFromTuple(vt)
+}
+
+func (v *Value) CallMethod(name string, argv ...*Value) (*Value, error) {
+	if m, err := v.Get(name); err != nil {
+		return nil, err
+	} else if value, err := m.Call(v, argv...); err != nil {
+		return nil, err
+	} else {
+		return value, nil
+	}
 }
 
 func (v *Value) New(argv ...*Value) (*Value, error) {
@@ -184,49 +219,60 @@ func (v *Value) String() string {
 	return s
 }
 
+func (v *Value) tracerString() string {
+	return v.String()
+}
+
 func (v *Value) MarshalJSON() ([]byte, error) {
-	if j, err := v.context.Global().Get("JSON"); err != nil {
-		return nil, fmt.Errorf("cannot get JSON: %+v", err)
-	} else if js, err := j.Get("stringify"); err != nil {
-		return nil, fmt.Errorf("cannot get JSON.stringify: %+v", err)
-	} else if s, err := js.Call(nil, v); err != nil {
-		return nil, fmt.Errorf("failed to stringify value: %+v", err)
+	if s, err := v.context.newValueFromTuple(C.v8_JSON_Stringify(v.context.pointer, v.pointer)); err != nil {
+		return nil, err
 	} else {
 		return []byte(s.String()), nil
 	}
 }
 
-func (v *Value) Receiver(t reflect.Type) *reflect.Value {
+func (v *Value) receiver() *valueRef {
 	if v.GetInternalFieldCount() == 0 {
 		return nil
 	}
 
-	vid, _ := v.GetInternalField(0)
-	id := ID(vid.Int64())
-
-	if id == ID(0) {
+	idn := id(v.GetInternalField(0))
+	if idn == id(0) {
 		return nil
 	}
 
-	ref := v.context.values.Get(id)
+	ref := v.context.values.Get(idn)
 	if ref == nil {
 		return nil
 	}
 
-	var r reflect.Value
 	if vref, ok := ref.(*valueRef); !ok {
+		return nil
+	} else {
+		return vref
+	}
+}
+
+func (v *Value) Receiver(t reflect.Type) *reflect.Value {
+	var r reflect.Value
+	if vref := v.receiver(); vref == nil {
 		return nil
 	} else {
 		r = vref.value
 	}
 
+	if t.Kind() == reflect.Interface && r.Type().ConvertibleTo(t) {
+		r = r.Convert(t)
+		return &r
+	}
+
 	ptr := t.Kind() == reflect.Ptr
 
 	rt := r.Type()
-	if rt.Kind() == reflect.Ptr || rt.Kind() == reflect.Interface {
+	if rt.Kind() == reflect.Ptr {
 		rt = rt.Elem()
 	}
-	if t.Kind() == reflect.Ptr || t.Kind() == reflect.Interface {
+	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
 	}
 
@@ -244,16 +290,117 @@ func (v *Value) Receiver(t reflect.Type) *reflect.Value {
 }
 
 func (v *Value) SetReceiver(value *reflect.Value) {
-	id := v.context.values.Ref(&valueRef{*value, 0})
-	idv, _ := v.context.Create(id)
-	v.SetInternalField(0, idv)
+	if !v.IsKind(KindObject) {
+		return
+	}
+
+	if v.GetInternalFieldCount() == 0 {
+		return
+	}
+
+	if vref := v.receiver(); vref != nil {
+		v.context.values.Release(vref)
+	}
+
+	if value == nil {
+		v.SetInternalField(0, 0)
+		return
+	}
+
+	id := v.context.values.Ref(&valueRef{value: *value})
+	v.setID("r", id)
+	v.SetInternalField(0, uint32(id))
+}
+
+func (v *Value) AddFinalizer(finalizer func()) {
+	v.finalizers = append(v.finalizers, finalizer)
+}
+
+type weakCallbackInfo struct {
+	object   interface{}
+	callback func()
+}
+
+//export ValueWeakCallbackHandler
+func ValueWeakCallbackHandler(pid C.String) {
+	ids := C.GoStringN(pid.data, pid.length)
+
+	parts := strings.SplitN(ids, ":", 3)
+	isolateId, _ := strconv.Atoi(parts[0])
+	contextId, _ := strconv.Atoi(parts[1])
+
+	isolateRef := isolates.Get(id(isolateId))
+	if isolateRef == nil {
+		panic(fmt.Errorf("missing isolate pointer during weak callback for isolate #%d", isolateId))
+	}
+	isolate := isolateRef.(*Isolate)
+
+	contextRef := isolate.contexts.Get(id(contextId))
+	if contextRef == nil {
+		panic(fmt.Errorf("missing context pointer during weak callback for context #%d", contextId))
+	}
+	context := contextRef.(*Context)
+
+	context.weakCallbackMutex.Lock()
+	if info, ok := context.weakCallbacks[ids]; !ok {
+		panic(fmt.Errorf("missing callback pointer during weak callback"))
+	} else {
+		context.weakCallbackMutex.Unlock()
+		info.callback()
+		delete(context.weakCallbacks, ids)
+	}
+}
+
+func (v *Value) setWeak(id string, callback func()) {
+	pid := C.CString(id)
+	defer C.free(unsafe.Pointer(pid))
+
+	v.context.weakCallbackMutex.Lock()
+	v.context.weakCallbacks[id] = &weakCallbackInfo{v, callback}
+	v.context.weakCallbackMutex.Unlock()
+	C.v8_Value_SetWeak(v.context.pointer, v.pointer, pid)
 }
 
 func (v *Value) release() {
-	if v.pointer != nil {
-		C.v8_Value_Release(v.context.pointer, v.pointer)
+	if v.getID("r") != 0 {
+		iid := v.context.isolate.ref()
+		defer v.context.isolate.unref()
+
+		cid := v.context.ref()
+		defer v.context.unref()
+
+		vid := v.ref()
+		defer v.unref()
+
+		id := fmt.Sprintf("%d:%d:%d", iid, cid, vid)
+
+		v.setWeak(id, func() {
+			for _, finalizer := range v.finalizers {
+				finalizer()
+			}
+			v.finalize()
+		})
+	} else {
+		v.finalize()
 	}
-	v.context = nil
-	v.pointer = nil
+
 	runtime.SetFinalizer(v, nil)
+}
+
+func (v *Value) finalize() {
+	if v.pointer != nil {
+		v.context.isolate.tracer.RemoveValue(v)
+		if id := v.getID("r"); id != 0 {
+			if vref := v.context.values.Get(id); vref != nil {
+				log.Println("releasing valueRef", id)
+				v.context.values.Release(vref)
+			}
+		}
+		t := v.context.isolate.tracer
+		t.Lock()
+		defer t.Unlock()
+		C.v8_Value_Release(v.context.pointer, v.pointer)
+		v.context = nil
+		v.pointer = nil
+	}
 }
