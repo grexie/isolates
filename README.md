@@ -2,15 +2,16 @@
 
 ## Copyright
 
-Substantially based on the great work by Augusto Roman (@augustoroman):
-[https://github.com/augustoroman/v8](github.com/augustoroman/v8)
+Substantially based on the great work by Augusto Roman ([@augustoroman](https://github.com/augustoroman)):
 
-I've added native promises, JSON stringify/parse, value caching, weak callbacks, function templates and constructors, v8
+[github.com/augustoroman/v8](https://github.com/augustoroman/v8)
+
+I've added native promises, JSON stringify / parse, value caching, weak callbacks, function templates and constructors, v8
 Inspector and a terminal-based allocation tracer api for debugging.
 
 Thanks be to God for the help He has given me in writing this.
 
-## Bugs
+## Bugs
 
 Please open an issue to report a bug. Before opening a new issue please see if there are already issues matching your
 case.
