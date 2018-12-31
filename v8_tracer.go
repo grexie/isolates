@@ -3,9 +3,8 @@ package v8
 import (
 	"fmt"
 	"io"
+	"log"
 	"reflect"
-	"runtime"
-	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -59,7 +58,7 @@ func StopTracer(t TracerType) {
 }
 
 func DumpTracer(w io.Writer, allocations bool) {
-	go tracer.Dump(w, allocations)
+	tracer.Dump(w, allocations)
 }
 
 type nullTracer struct{}
@@ -102,7 +101,7 @@ var st *simpleTracer
 
 func newSimpleTracer() *simpleTracer {
 	t := &simpleTracer{
-		channel:       make(chan *simpleTracerMessage, 1024),
+		channel:       make(chan *simpleTracerMessage),
 		referenceMaps: map[string][]*refutils.RefMap{},
 	}
 	st = t
@@ -111,8 +110,11 @@ func newSimpleTracer() *simpleTracer {
 
 func (t *simpleTracer) Start() {
 	go func() {
+		i := 0
 		for m := range t.channel {
-			t.mutex.RLock()
+			i++
+			log.Println("received message, locking", i)
+			t.mutex.Lock()
 			if m.Add != nil {
 				t.add(m.Add.Ref, m.Add.StackTrace)
 			} else if m.Remove != nil {
@@ -122,7 +124,8 @@ func (t *simpleTracer) Start() {
 			} else if m.RemoveRefMap != nil {
 				t.removeRefMap(m.RemoveRefMap.Name, m.RemoveRefMap.RefMap)
 			}
-			t.mutex.RUnlock()
+			t.mutex.Unlock()
+			log.Println("finished message, unlocking", i)
 		}
 	}()
 }
@@ -164,7 +167,7 @@ func (t *simpleTracer) add(value refutils.Ref, stack []byte) {
 }
 
 func (t *simpleTracer) Add(value refutils.Ref) {
-	t.channel <- &simpleTracerMessage{Add: &simpleTracerAddMessage{value, debug.Stack()}}
+	t.channel <- &simpleTracerMessage{Add: &simpleTracerAddMessage{value, nil}}
 }
 
 func (t *simpleTracer) remove(value refutils.Ref) {
@@ -241,12 +244,12 @@ func (t *simpleTracer) Dump(w io.Writer, allocations bool) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
-	runtime.GC()
-	// for _, isolate := range t.isolates {
-	// 	if err := isolate.lock(); err == nil {
+	// runtime.GC()
+	// for _, isolate := range isolates.Refs() {
+	// 	//if err := isolate.lock(); err == nil {
 	// 		isolate.RequestGarbageCollectionForTesting()
-	// 		defer isolate.unlock()
-	// 	}
+	// 		//defer isolate.unlock()
+	// 	//}
 	// }
 
 	// t.mutex.Lock()

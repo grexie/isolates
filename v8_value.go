@@ -8,6 +8,7 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"log"
 	"reflect"
 	"runtime"
 	"strconv"
@@ -39,6 +40,8 @@ func (c *Context) newValueFromTuple(vt C.ValueTuple) (*Value, error) {
 }
 
 func (c *Context) newValue(pointer C.ValuePtr, k C.Kinds) *Value {
+	log.Println("newValue")
+	defer log.Println("newValue:exit")
 	if pointer == nil {
 		return nil
 	}

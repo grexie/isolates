@@ -7,7 +7,6 @@ import "C"
 
 import (
 	"fmt"
-	"log"
 	"reflect"
 	"runtime"
 	"sort"
@@ -79,10 +78,8 @@ func isZero(v reflect.Value) bool {
 }
 
 func (c *Context) Create(v interface{}) (*Value, error) {
-	log.Println("Create", v)
 	rv := reflect.ValueOf(v)
 	value, err := c.create(rv)
-	log.Println("Create:exit", value, err)
 	return value, err
 }
 
