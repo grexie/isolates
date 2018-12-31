@@ -10,10 +10,12 @@ import (
 	"runtime"
 	"sync"
 	"unsafe"
+
+	refutils "github.com/behrsin/go-refutils"
 )
 
 type Context struct {
-	referenceObject
+	refutils.RefHolder
 
 	isolate   *Isolate
 	pointer   C.ContextPtr
@@ -24,10 +26,10 @@ type Context struct {
 	vtrue     *Value
 
 	functionCache map[uintptr]*Value
-	functions     *referenceMap
-	accessors     *referenceMap
-	values        *referenceMap
-	refs          *referenceMap
+	functions     *refutils.RefMap
+	accessors     *refutils.RefMap
+	values        *refutils.RefMap
+	refs          *refutils.RefMap
 	objects       map[uintptr]*Value
 
 	baseConstructor *FunctionTemplate
@@ -41,17 +43,21 @@ func (i *Isolate) NewContext() *Context {
 	context := &Context{
 		isolate:       i,
 		pointer:       C.v8_Context_New(i.pointer),
-		functions:     newReferenceMap("f", reflect.TypeOf(&functionInfo{})),
-		accessors:     newReferenceMap("a", reflect.TypeOf(&accessorInfo{})),
-		values:        newReferenceMap("v", reflect.TypeOf(&valueRef{})),
-		refs:          newReferenceMap("v", reflect.TypeOf(&Value{})),
+		functions:     refutils.NewRefMap("f"),
+		accessors:     refutils.NewRefMap("a"),
+		values:        refutils.NewRefMap("v"),
+		refs:          refutils.NewRefMap("v"),
 		objects:       map[uintptr]*Value{},
 		constructors:  map[reflect.Type]*FunctionTemplate{},
 		weakCallbacks: map[string]*weakCallbackInfo{},
 	}
 	context.ref()
 	runtime.SetFinalizer(context, (*Context).release)
-	i.tracer.AddContext(context)
+	tracer.Add(context)
+	tracer.AddRefMap("functionInfo", context.functions)
+	tracer.AddRefMap("accessorInfo", context.accessors)
+	tracer.AddRefMap("valueRef", context.values)
+	tracer.AddRefMap("refs", context.refs)
 	return context
 }
 
@@ -59,7 +65,7 @@ func (c *Context) GetIsolate() *Isolate {
 	return c.isolate
 }
 
-func (c *Context) ref() id {
+func (c *Context) ref() refutils.ID {
 	return c.isolate.contexts.Ref(c)
 }
 
@@ -123,7 +129,12 @@ func (c *Context) ParseJSON(json string) (*Value, error) {
 }
 
 func (c *Context) release() {
-	c.isolate.tracer.RemoveContext(c)
+	tracer.RemoveRefMap("functionInfo", c.functions)
+	tracer.RemoveRefMap("accessorInfo", c.accessors)
+	tracer.RemoveRefMap("valueRef", c.values)
+	tracer.RemoveRefMap("refs", c.refs)
+	tracer.Remove(c)
+
 	if c.pointer != nil {
 		C.v8_Context_Release(c.pointer)
 	}

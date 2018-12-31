@@ -11,6 +11,8 @@ import (
 	"reflect"
 	"runtime"
 	"unsafe"
+
+	refutils "github.com/behrsin/go-refutils"
 )
 
 type CallerInfo struct {
@@ -21,6 +23,8 @@ type CallerInfo struct {
 }
 
 type FunctionTemplate struct {
+	refutils.RefHolder
+
 	context *Context
 	pointer C.FunctionTemplatePtr
 	info    *functionInfo
@@ -28,6 +32,8 @@ type FunctionTemplate struct {
 }
 
 type ObjectTemplate struct {
+	refutils.RefHolder
+
 	context *Context
 	pointer C.ObjectTemplatePtr
 }
@@ -70,18 +76,18 @@ type SetterArgs struct {
 }
 
 type functionInfo struct {
-	referenceObject
+	refutils.RefHolder
 
 	Function
 }
 
 func (fi *functionInfo) String() string {
 	name := runtime.FuncForPC(reflect.ValueOf(fi.Function).Pointer()).Name()
-	return fmt.Sprintf("function {%d %p %s}", fi.getID("f"), fi.Function, name)
+	return fmt.Sprintf("function {%p %s}", fi.Function, name)
 }
 
 type accessorInfo struct {
-	referenceObject
+	refutils.RefHolder
 
 	Getter
 	Setter
@@ -103,8 +109,13 @@ func (c *Context) NewFunctionTemplate(cb Function) *FunctionTemplate {
 
 	pf := C.v8_FunctionTemplate_New(c.pointer, pid)
 
-	f := &FunctionTemplate{c, pf, info, nil}
+	f := &FunctionTemplate{
+		context: c,
+		pointer: pf,
+		info:    info,
+	}
 	runtime.SetFinalizer(f, (*FunctionTemplate).release)
+	tracer.Add(f)
 	return f
 }
 
@@ -137,7 +148,6 @@ func (f *FunctionTemplate) GetFunction() *Value {
 		pv := C.v8_FunctionTemplate_GetFunction(f.context.pointer, f.pointer)
 		f.value = f.context.newValue(pv, unionKindFunction)
 
-		f.value.created = true
 		f.value.AddFinalizer(func(c *Context, i *functionInfo) func() {
 			return func() {
 				log.Println("WeakCallback:finalizer")
@@ -154,7 +164,13 @@ func (f *FunctionTemplate) GetInstanceTemplate() *ObjectTemplate {
 	defer f.context.unref()
 
 	po := C.v8_FunctionTemplate_InstanceTemplate(f.context.pointer, f.pointer)
-	return &ObjectTemplate{f.context, po}
+	ot := &ObjectTemplate{
+		context: f.context,
+		pointer: po,
+	}
+	runtime.SetFinalizer(ot, (*ObjectTemplate).release)
+	tracer.Add(ot)
+	return ot
 }
 
 func (f *FunctionTemplate) GetPrototypeTemplate() *ObjectTemplate {
@@ -162,10 +178,18 @@ func (f *FunctionTemplate) GetPrototypeTemplate() *ObjectTemplate {
 	defer f.context.unref()
 
 	pp := C.v8_FunctionTemplate_PrototypeTemplate(f.context.pointer, f.pointer)
-	return &ObjectTemplate{f.context, pp}
+	ot := &ObjectTemplate{
+		context: f.context,
+		pointer: pp,
+	}
+	runtime.SetFinalizer(ot, (*ObjectTemplate).release)
+	tracer.Add(ot)
+	return ot
 }
 
 func (f *FunctionTemplate) release() {
+	tracer.Remove(f)
+
 	if f.pointer != nil {
 		f.context.ref()
 		C.v8_FunctionTemplate_Release(f.context.pointer, f.pointer)
@@ -207,11 +231,14 @@ func (o *ObjectTemplate) SetAccessor(name string, getter Getter, setter Setter) 
 }
 
 func (o *ObjectTemplate) release() {
+	tracer.Remove(o)
+
 	if o.pointer != nil {
 		o.context.ref()
 		C.v8_ObjectTemplate_Release(o.context.pointer, o.pointer)
 		o.context.unref()
 	}
+
 	o.context = nil
 	o.pointer = nil
 	runtime.SetFinalizer(o, nil)

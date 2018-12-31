@@ -7,6 +7,7 @@ import "C"
 
 import (
 	"fmt"
+	"log"
 	"reflect"
 	"runtime"
 	"sort"
@@ -14,6 +15,8 @@ import (
 	"time"
 	"unicode"
 	"unsafe"
+
+	refutils "github.com/behrsin/go-refutils"
 )
 
 type Marshaler interface {
@@ -21,7 +24,7 @@ type Marshaler interface {
 }
 
 type valueRef struct {
-	referenceObject
+	refutils.RefHolder
 
 	value reflect.Value
 }
@@ -76,11 +79,10 @@ func isZero(v reflect.Value) bool {
 }
 
 func (c *Context) Create(v interface{}) (*Value, error) {
+	log.Println("Create", v)
 	rv := reflect.ValueOf(v)
 	value, err := c.create(rv)
-	if rv.IsValid() && err != nil {
-		value.created = true
-	}
+	log.Println("Create:exit", value, err)
 	return value, err
 }
 

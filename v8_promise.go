@@ -8,9 +8,13 @@ import "C"
 import (
 	"fmt"
 	"runtime"
+
+	refutils "github.com/behrsin/go-refutils"
 )
 
 type Resolver struct {
+	refutils.RefHolder
+
 	context *Context
 	pointer C.ResolverPtr
 }
@@ -25,31 +29,50 @@ func (c *Context) NewResolver() (*Resolver, error) {
 		pointer: pr,
 	}
 	runtime.SetFinalizer(r, (*Resolver).release)
+	tracer.Add(r)
 	return r, nil
 }
 
-func (r *Resolver) Resolve(v *Value) error {
+func (r *Resolver) ResolveWithValue(v *Value) error {
 	err := C.v8_Resolver_Resolve(r.context.pointer, r.pointer, v.pointer)
 	return r.context.isolate.newError(err)
 }
 
-func (r *Resolver) Reject(v *Value) error {
+func (r *Resolver) Resolve(value interface{}) error {
+	if v, err := r.context.Create(value); err != nil {
+		return err
+	} else {
+		return r.ResolveWithValue(v)
+	}
+}
+
+func (r *Resolver) RejectWithValue(v *Value) error {
 	err := C.v8_Resolver_Reject(r.context.pointer, r.pointer, v.pointer)
 	return r.context.isolate.newError(err)
+}
+
+func (r *Resolver) Reject(value interface{}) error {
+	if v, err := r.context.Create(value); err != nil {
+		return err
+	} else {
+		return r.RejectWithValue(v)
+	}
 }
 
 func (r *Resolver) Promise() *Value {
 	pv := C.v8_Resolver_GetPromise(r.context.pointer, r.pointer)
 	v := r.context.newValue(pv, unionKindPromise)
-	v.created = true
 	return v
 }
 
 func (r *Resolver) release() {
+	tracer.Remove(r)
+
 	if r.pointer != nil {
 		C.v8_Resolver_Release(r.context.pointer, r.pointer)
 	}
 	r.context = nil
 	r.pointer = nil
+
 	runtime.SetFinalizer(r, nil)
 }

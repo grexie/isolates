@@ -8,23 +8,23 @@ import "C"
 import (
 	"errors"
 	"fmt"
-	"log"
 	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
 	"unsafe"
+
+	refutils "github.com/behrsin/go-refutils"
 )
 
 type Value struct {
-	referenceObject
+	refutils.RefHolder
 
 	context    *Context
 	pointer    C.ValuePtr
 	kinds      kinds
 	finalizers []func()
-	created    bool
 }
 
 type PropertyDescriptor struct {
@@ -49,13 +49,14 @@ func (c *Context) newValue(pointer C.ValuePtr, k C.Kinds) *Value {
 		kinds:      kinds(k),
 		finalizers: make([]func(), 0),
 	}
-	c.isolate.tracer.AddValue(v)
-
 	runtime.SetFinalizer(v, (*Value).release)
+
+	tracer.Add(v)
+
 	return v
 }
 
-func (v *Value) ref() id {
+func (v *Value) ref() refutils.ID {
 	return v.context.refs.Ref(v)
 }
 
@@ -236,8 +237,8 @@ func (v *Value) receiver() *valueRef {
 		return nil
 	}
 
-	idn := id(v.GetInternalField(0))
-	if idn == id(0) {
+	idn := refutils.ID(v.GetInternalField(0))
+	if idn == 0 {
 		return nil
 	}
 
@@ -308,7 +309,7 @@ func (v *Value) SetReceiver(value *reflect.Value) {
 	}
 
 	id := v.context.values.Ref(&valueRef{value: *value})
-	v.setID("r", id)
+	// v.setID("r", id)
 	v.SetInternalField(0, uint32(id))
 }
 
@@ -329,13 +330,13 @@ func ValueWeakCallbackHandler(pid C.String) {
 	isolateId, _ := strconv.Atoi(parts[0])
 	contextId, _ := strconv.Atoi(parts[1])
 
-	isolateRef := isolates.Get(id(isolateId))
+	isolateRef := isolates.Get(refutils.ID(isolateId))
 	if isolateRef == nil {
 		panic(fmt.Errorf("missing isolate pointer during weak callback for isolate #%d", isolateId))
 	}
 	isolate := isolateRef.(*Isolate)
 
-	contextRef := isolate.contexts.Get(id(contextId))
+	contextRef := isolate.contexts.Get(refutils.ID(contextId))
 	if contextRef == nil {
 		panic(fmt.Errorf("missing context pointer during weak callback for context #%d", contextId))
 	}
@@ -362,43 +363,41 @@ func (v *Value) setWeak(id string, callback func()) {
 }
 
 func (v *Value) release() {
-	if v.getID("r") != 0 {
-		iid := v.context.isolate.ref()
-		defer v.context.isolate.unref()
-
-		cid := v.context.ref()
-		defer v.context.unref()
-
-		vid := v.ref()
-		defer v.unref()
-
-		id := fmt.Sprintf("%d:%d:%d", iid, cid, vid)
-
-		v.setWeak(id, func() {
-			for _, finalizer := range v.finalizers {
-				finalizer()
-			}
-			v.finalize()
-		})
-	} else {
-		v.finalize()
-	}
-
+	// if false {
+	// 	iid := v.context.isolate.ref()
+	// 	defer v.context.isolate.unref()
+	//
+	// 	cid := v.context.ref()
+	// 	defer v.context.unref()
+	//
+	// 	vid := v.ref()
+	// 	defer v.unref()
+	//
+	// 	id := fmt.Sprintf("%d:%d:%d", iid, cid, vid)
+	//
+	// 	v.setWeak(id, func() {
+	// 		for _, finalizer := range v.finalizers {
+	// 			finalizer()
+	// 		}
+	// 		v.finalize()
+	// 	})
+	// } else {
+	// 	v.finalize()
+	// }
+	v.finalize()
 	runtime.SetFinalizer(v, nil)
 }
 
 func (v *Value) finalize() {
+	tracer.Remove(v)
 	if v.pointer != nil {
-		v.context.isolate.tracer.RemoveValue(v)
-		if id := v.getID("r"); id != 0 {
-			if vref := v.context.values.Get(id); vref != nil {
-				log.Println("releasing valueRef", id)
-				v.context.values.Release(vref)
-			}
-		}
-		t := v.context.isolate.tracer
-		t.Lock()
-		defer t.Unlock()
+		// if id := v.getID("r"); id != 0 {
+		// 	if vref := v.context.values.Get(id); vref != nil {
+		// 		log.Println("releasing valueRef", id)
+		// 		v.context.values.Release(vref)
+		// 	}
+		// }
+
 		C.v8_Value_Release(v.context.pointer, v.pointer)
 		v.context = nil
 		v.pointer = nil

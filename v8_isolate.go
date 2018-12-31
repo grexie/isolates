@@ -7,17 +7,17 @@ import "C"
 
 import (
 	"errors"
-	"reflect"
 	"runtime"
 	"sync"
 	"unsafe"
+
+	refutils "github.com/behrsin/go-refutils"
 )
 
 type Isolate struct {
-	referenceObject
+	refutils.RefHolder
 	pointer  C.IsolatePtr
-	contexts *referenceMap
-	tracer   tracer
+	contexts *refutils.RefMap
 }
 
 type Snapshot struct {
@@ -37,7 +37,7 @@ type HeapStatistics struct {
 }
 
 var initOnce sync.Once
-var isolates = newReferenceMap("i", reflect.TypeOf(&Isolate{}))
+var isolates = refutils.NewRefMap("i")
 
 func NewIsolate() *Isolate {
 	initOnce.Do(func() {
@@ -46,11 +46,12 @@ func NewIsolate() *Isolate {
 
 	isolate := &Isolate{
 		pointer:  C.v8_Isolate_New(C.StartupData{data: nil, length: 0}),
-		contexts: newReferenceMap("c", reflect.TypeOf(&Context{})),
-		tracer:   &nullTracer{},
+		contexts: refutils.NewRefMap("c"),
 	}
 	isolate.ref()
 	runtime.SetFinalizer(isolate, (*Isolate).release)
+
+	tracer.Add(isolate)
 
 	return isolate
 }
@@ -62,16 +63,17 @@ func NewIsolateWithSnapshot(snapshot *Snapshot) *Isolate {
 
 	isolate := &Isolate{
 		pointer:  C.v8_Isolate_New(snapshot.data),
-		contexts: newReferenceMap("c", reflect.TypeOf(&Context{})),
-		tracer:   &nullTracer{},
+		contexts: refutils.NewRefMap("c"),
 	}
 	isolate.ref()
 	runtime.SetFinalizer(isolate, (*Isolate).release)
 
+	tracer.Add(isolate)
+
 	return isolate
 }
 
-func (i *Isolate) ref() id {
+func (i *Isolate) ref() refutils.ID {
 	return isolates.Ref(i)
 }
 
@@ -118,6 +120,8 @@ func (i *Isolate) newError(err C.Error) error {
 }
 
 func (i *Isolate) release() {
+	tracer.Remove(i)
+
 	C.v8_Isolate_Release(i.pointer)
 	i.pointer = nil
 	isolates.Release(i)
