@@ -39,7 +39,13 @@ type Context struct {
 	weakCallbackMutex sync.Mutex
 }
 
-func (i *Isolate) NewContext() *Context {
+func (i *Isolate) NewContext() (*Context, error) {
+	if err := i.lock(); err != nil {
+		return nil, err
+	} else {
+		defer i.unlock()
+	}
+
 	context := &Context{
 		isolate:       i,
 		pointer:       C.v8_Context_New(i.pointer),
@@ -58,7 +64,7 @@ func (i *Isolate) NewContext() *Context {
 	tracer.AddRefMap("accessorInfo", context.accessors)
 	tracer.AddRefMap("valueRef", context.values)
 	tracer.AddRefMap("refs", context.refs)
-	return context
+	return context, nil
 }
 
 func (c *Context) GetIsolate() *Isolate {
@@ -74,6 +80,12 @@ func (c *Context) unref() {
 }
 
 func (c *Context) Run(code string, filename string) (*Value, error) {
+	if err := c.isolate.lock(); err != nil {
+		return nil, err
+	} else {
+		defer c.isolate.unlock()
+	}
+
 	pcode := C.CString(code)
 	pfilename := C.CString(filename)
 
@@ -87,45 +99,100 @@ func (c *Context) Run(code string, filename string) (*Value, error) {
 	return c.newValueFromTuple(vt)
 }
 
-func (c *Context) Undefined() *Value {
+func (c *Context) Undefined() (*Value, error) {
+	if err := c.isolate.lock(); err != nil {
+		return nil, err
+	} else {
+		defer c.isolate.unlock()
+	}
+
 	if c.undefined == nil {
 		c.undefined = c.newValue(C.v8_Context_Create(c.pointer, C.ImmediateValue{_type: C.tUNDEFINED}), C.Kinds(KindUndefined))
 	}
-	return c.undefined
+	return c.undefined, nil
 }
 
-func (c *Context) Null() *Value {
+func (c *Context) Null() (*Value, error) {
+	if err := c.isolate.lock(); err != nil {
+		return nil, err
+	} else {
+		defer c.isolate.unlock()
+	}
+
 	if c.null == nil {
 		c.null = c.newValue(C.v8_Context_Create(c.pointer, C.ImmediateValue{_type: C.tOBJECT}), C.Kinds(KindNull))
 	}
-	return c.null
+	return c.null, nil
 }
 
-func (c *Context) False() *Value {
+func (c *Context) False() (*Value, error) {
+	if err := c.isolate.lock(); err != nil {
+		return nil, err
+	} else {
+		defer c.isolate.unlock()
+	}
+
 	if c.vfalse == nil {
 		c.vfalse = c.newValue(C.v8_Context_Create(c.pointer, C.ImmediateValue{_type: C.tBOOL, _bool: false}), C.Kinds(KindBoolean))
 	}
-	return c.vfalse
+	return c.vfalse, nil
 }
 
-func (c *Context) True() *Value {
+func (c *Context) True() (*Value, error) {
+	if err := c.isolate.lock(); err != nil {
+		return nil, err
+	} else {
+		defer c.isolate.unlock()
+	}
+
 	if c.vtrue == nil {
 		c.vtrue = c.newValue(C.v8_Context_Create(c.pointer, C.ImmediateValue{_type: C.tBOOL, _bool: true}), C.Kinds(KindBoolean))
 	}
-	return c.vtrue
+	return c.vtrue, nil
 }
 
-func (c *Context) Global() *Value {
+func (c *Context) Global() (*Value, error) {
+	if err := c.isolate.lock(); err != nil {
+		return nil, err
+	} else {
+		defer c.isolate.unlock()
+	}
+
 	if c.global == nil {
 		c.global = c.newValue(C.v8_Context_Global(c.pointer), C.Kinds(KindObject))
 	}
-	return c.global
+	return c.global, nil
 }
 
 func (c *Context) ParseJSON(json string) (*Value, error) {
+	if err := c.isolate.lock(); err != nil {
+		return nil, err
+	} else {
+		defer c.isolate.unlock()
+	}
+
 	pjson := C.CString(json)
 	defer C.free(unsafe.Pointer(pjson))
 	return c.newValueFromTuple(C.v8_JSON_Parse(c.pointer, pjson))
+}
+
+func (c *Context) terminate() {
+	c.global = nil
+	c.undefined = nil
+	c.null = nil
+	c.vfalse = nil
+	c.vtrue = nil
+
+	c.functions.ReleaseAll()
+	c.accessors.ReleaseAll()
+	c.values.ReleaseAll()
+	c.refs.ReleaseAll()
+	c.objects = nil
+
+	c.baseConstructor = nil
+	c.constructors = nil
+
+	c.weakCallbacks = nil
 }
 
 func (c *Context) release() {
@@ -134,6 +201,10 @@ func (c *Context) release() {
 	tracer.RemoveRefMap("valueRef", c.values)
 	tracer.RemoveRefMap("refs", c.refs)
 	tracer.Remove(c)
+
+	if err := c.isolate.lock(); err == nil {
+		defer c.isolate.unlock()
+	}
 
 	if c.pointer != nil {
 		C.v8_Context_Release(c.pointer)

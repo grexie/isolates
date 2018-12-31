@@ -20,6 +20,12 @@ type Resolver struct {
 }
 
 func (c *Context) NewResolver() (*Resolver, error) {
+	if err := c.isolate.lock(); err != nil {
+		return nil, err
+	} else {
+		defer c.isolate.unlock()
+	}
+
 	pr := C.v8_Promise_NewResolver(c.pointer)
 	if pr == nil {
 		return nil, fmt.Errorf("cannot create resolver for context")
@@ -34,11 +40,23 @@ func (c *Context) NewResolver() (*Resolver, error) {
 }
 
 func (r *Resolver) ResolveWithValue(v *Value) error {
+	if err := r.context.isolate.lock(); err != nil {
+		return err
+	} else {
+		defer r.context.isolate.unlock()
+	}
+
 	err := C.v8_Resolver_Resolve(r.context.pointer, r.pointer, v.pointer)
 	return r.context.isolate.newError(err)
 }
 
 func (r *Resolver) Resolve(value interface{}) error {
+	if err := r.context.isolate.lock(); err != nil {
+		return err
+	} else {
+		defer r.context.isolate.unlock()
+	}
+
 	if v, err := r.context.Create(value); err != nil {
 		return err
 	} else {
@@ -47,11 +65,23 @@ func (r *Resolver) Resolve(value interface{}) error {
 }
 
 func (r *Resolver) RejectWithValue(v *Value) error {
+	if err := r.context.isolate.lock(); err != nil {
+		return err
+	} else {
+		defer r.context.isolate.unlock()
+	}
+
 	err := C.v8_Resolver_Reject(r.context.pointer, r.pointer, v.pointer)
 	return r.context.isolate.newError(err)
 }
 
 func (r *Resolver) Reject(value interface{}) error {
+	if err := r.context.isolate.lock(); err != nil {
+		return err
+	} else {
+		defer r.context.isolate.unlock()
+	}
+
 	if v, err := r.context.Create(value); err != nil {
 		return err
 	} else {
@@ -59,14 +89,24 @@ func (r *Resolver) Reject(value interface{}) error {
 	}
 }
 
-func (r *Resolver) Promise() *Value {
+func (r *Resolver) Promise() (*Value, error) {
+	if err := r.context.isolate.lock(); err != nil {
+		return nil, err
+	} else {
+		defer r.context.isolate.unlock()
+	}
+
 	pv := C.v8_Resolver_GetPromise(r.context.pointer, r.pointer)
 	v := r.context.newValue(pv, unionKindPromise)
-	return v
+	return v, nil
 }
 
 func (r *Resolver) release() {
 	tracer.Remove(r)
+
+	if err := r.context.isolate.lock(); err == nil {
+		defer r.context.isolate.unlock()
+	}
 
 	if r.pointer != nil {
 		C.v8_Resolver_Release(r.context.pointer, r.pointer)

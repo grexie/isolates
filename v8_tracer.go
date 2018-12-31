@@ -3,8 +3,9 @@ package v8
 import (
 	"fmt"
 	"io"
-	"log"
 	"reflect"
+	"runtime"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -110,11 +111,8 @@ func newSimpleTracer() *simpleTracer {
 
 func (t *simpleTracer) Start() {
 	go func() {
-		i := 0
 		for m := range t.channel {
-			i++
-			log.Println("received message, locking", i)
-			t.mutex.Lock()
+			t.mutex.RLock()
 			if m.Add != nil {
 				t.add(m.Add.Ref, m.Add.StackTrace)
 			} else if m.Remove != nil {
@@ -124,8 +122,7 @@ func (t *simpleTracer) Start() {
 			} else if m.RemoveRefMap != nil {
 				t.removeRefMap(m.RemoveRefMap.Name, m.RemoveRefMap.RefMap)
 			}
-			t.mutex.Unlock()
-			log.Println("finished message, unlocking", i)
+			t.mutex.RUnlock()
 		}
 	}()
 }
@@ -147,7 +144,7 @@ func (t *simpleTracer) weakReferenceMapForReference(value refutils.Ref) (string,
 	name := structType.Name()
 
 	if _, ok := t.referenceMaps[name]; !ok {
-		t.referenceMaps[name] = []*refutils.RefMap{refutils.NewWeakRefMap("v8-simple-tracer")}
+		t.referenceMaps[name] = []*refutils.RefMap{refutils.NewWeakRefMap("v8-tracer")}
 	}
 	m := t.referenceMaps[name][0]
 
@@ -167,7 +164,12 @@ func (t *simpleTracer) add(value refutils.Ref, stack []byte) {
 }
 
 func (t *simpleTracer) Add(value refutils.Ref) {
-	t.channel <- &simpleTracerMessage{Add: &simpleTracerAddMessage{value, nil}}
+	if t.stackTraces == nil {
+		t.channel <- &simpleTracerMessage{Add: &simpleTracerAddMessage{value, nil}}
+	} else {
+		t.channel <- &simpleTracerMessage{Add: &simpleTracerAddMessage{value, debug.Stack()}}
+	}
+
 }
 
 func (t *simpleTracer) remove(value refutils.Ref) {
@@ -234,27 +236,13 @@ func sortedMapStringUint64(m map[string]uint64, f func(k string, v uint64)) {
 }
 
 func (t *simpleTracer) Dump(w io.Writer, allocations bool) {
-	// for _, isolate := range t.isolates {
-	// 	if err := isolate.lock(); err != nil {
-	// 		return
-	// 	} else {
-	// 		defer isolate.unlock()
-	// 	}
-	// }
+	runtime.GC()
+	for _, isolate := range isolates.Refs() {
+		isolate.(*Isolate).RequestGarbageCollectionForTesting()
+	}
+
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
-
-	// runtime.GC()
-	// for _, isolate := range isolates.Refs() {
-	// 	//if err := isolate.lock(); err == nil {
-	// 		isolate.RequestGarbageCollectionForTesting()
-	// 		//defer isolate.unlock()
-	// 	//}
-	// }
-
-	// t.mutex.Lock()
-	// defer t.mutex.Unlock()
-	// defer t.referenceMapsMutex.RUnlock()
 
 	stats := map[string]uint64{}
 
@@ -273,34 +261,37 @@ func (t *simpleTracer) Dump(w io.Writer, allocations bool) {
 		fmt.Fprintf(w, "%s: %d\n", name, value)
 	})
 
-	// stats = map[string]uint64{}
-	// fmt.Fprintf(w, "%s\n", strings.Repeat("-", 80))
-	// fmt.Fprintf(w, "V8 Isolate Heap Statistics:\n\n")
-	//
-	// stats["total heap size"] = 0
-	// stats["total heap size executable"] = 0
-	// stats["total physical size"] = 0
-	// stats["total available size"] = 0
-	// stats["used heap size"] = 0
-	// stats["heap size limit"] = 0
-	// stats["malloced memory"] = 0
-	// stats["peak malloced memory"] = 0
-	//
-	// for _, isolate := range t.isolates {
-	// 	hs := isolate.GetHeapStatistics()
-	// 	stats["total heap size"] += hs.TotalHeapSize
-	// 	stats["total heap size executable"] += hs.TotalHeapSizeExecutable
-	// 	stats["total physical size"] += hs.TotalPhysicalSize
-	// 	stats["total available size"] += hs.TotalAvailableSize
-	// 	stats["used heap size"] += hs.UsedHeapSize
-	// 	stats["heap size limit"] += hs.HeapSizeLimit
-	// 	stats["malloced memory"] += hs.MallocedMemory
-	// 	stats["peak malloced memory"] += hs.PeakMallocedMemory
-	// }
-	//
-	// sortedMapStringUint64(stats, func(name string, value uint64) {
-	// 	fmt.Fprintf(w, "%s: %d\n", name, value)
-	// })
+	stats = map[string]uint64{}
+	fmt.Fprintf(w, "%s\n", strings.Repeat("-", 80))
+	fmt.Fprintf(w, "V8 Isolate Heap Statistics:\n\n")
+
+	stats["total heap size"] = 0
+	stats["total heap size executable"] = 0
+	stats["total physical size"] = 0
+	stats["total available size"] = 0
+	stats["used heap size"] = 0
+	stats["heap size limit"] = 0
+	stats["malloced memory"] = 0
+	stats["peak malloced memory"] = 0
+
+	for _, isolate := range isolates.Refs() {
+		if hs, err := isolate.(*Isolate).GetHeapStatistics(); err != nil {
+			continue
+		} else {
+			stats["total heap size"] += hs.TotalHeapSize
+			stats["total heap size executable"] += hs.TotalHeapSizeExecutable
+			stats["total physical size"] += hs.TotalPhysicalSize
+			stats["total available size"] += hs.TotalAvailableSize
+			stats["used heap size"] += hs.UsedHeapSize
+			stats["heap size limit"] += hs.HeapSizeLimit
+			stats["malloced memory"] += hs.MallocedMemory
+			stats["peak malloced memory"] += hs.PeakMallocedMemory
+		}
+	}
+
+	sortedMapStringUint64(stats, func(name string, value uint64) {
+		fmt.Fprintf(w, "%s: %d\n", name, value)
+	})
 
 	if allocations {
 		fmt.Fprintf(w, "%s\n", strings.Repeat("-", 80))
@@ -327,5 +318,4 @@ func (t *simpleTracer) Dump(w io.Writer, allocations bool) {
 	}
 
 	fmt.Fprintf(w, "%s\n", strings.Repeat("-", 80))
-
 }

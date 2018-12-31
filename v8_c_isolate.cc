@@ -30,9 +30,9 @@ extern "C" {
   }
 
 	void v8_Isolate_RequestGarbageCollectionForTesting(IsolatePtr pIsolate) {
-		ISOLATE_SCOPE(static_cast<v8::Isolate*>(pIsolate));
+		// ISOLATE_SCOPE(static_cast<v8::Isolate*>(pIsolate));
 
-		isolate->RequestGarbageCollectionForTesting(v8::Isolate::kFullGarbageCollection);
+		//isolate->RequestGarbageCollectionForTesting(v8::Isolate::kFullGarbageCollection);
 	}
 
 	HeapStatistics v8_Isolate_GetHeapStatistics(IsolatePtr pIsolate) {

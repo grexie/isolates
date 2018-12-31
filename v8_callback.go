@@ -7,6 +7,7 @@ import "C"
 
 import (
 	"fmt"
+	"log"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -129,6 +130,7 @@ func CallbackHandler(info *C.CallbackInfo) (r C.ValueTuple) {
 		int(info.caller.line),
 		int(info.caller.column),
 	}
+	log.Println("caller info", callerInfo)
 
 	self, _ := context.newValueFromTuple(info.self)
 	holder, _ := context.newValueFromTuple(info.holder)
