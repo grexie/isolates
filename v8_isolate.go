@@ -8,7 +8,6 @@ import "C"
 import (
 	"errors"
 	"fmt"
-	"log"
 	"reflect"
 	"runtime"
 	"sync"
@@ -20,12 +19,13 @@ import (
 type Isolate struct {
 	refutils.RefHolder
 
-	pointer       C.IsolatePtr
-	contexts      *refutils.RefMap
-	mutex         refutils.RefMutex
-	running       bool
-	data          map[string]interface{}
-	shutdownHooks []interface{}
+	pointer          C.IsolatePtr
+	contexts         *refutils.RefMap
+	terminationMutex refutils.RefMutex
+	isolateMutex     sync.Mutex
+	running          bool
+	data             map[string]interface{}
+	shutdownHooks    []interface{}
 }
 
 type Snapshot struct {
@@ -96,16 +96,16 @@ func (i *Isolate) unref() {
 }
 
 func (i *Isolate) lock() error {
-	i.mutex.RefLock()
+	i.terminationMutex.RefLock()
 	if !i.running {
-		i.mutex.RefUnlock()
+		i.terminationMutex.RefUnlock()
 		return fmt.Errorf("isolate terminated")
 	}
 	return nil
 }
 
 func (i *Isolate) unlock() {
-	i.mutex.RefUnlock()
+	i.terminationMutex.RefUnlock()
 }
 
 func (i *Isolate) IsRunning() bool {
@@ -125,6 +125,9 @@ func (i *Isolate) SetData(key string, value interface{}) {
 }
 
 func (i *Isolate) RequestGarbageCollectionForTesting() {
+	i.isolateMutex.Lock()
+	defer i.isolateMutex.Unlock()
+
 	if err := i.lock(); err != nil {
 		return
 	} else {
@@ -135,22 +138,29 @@ func (i *Isolate) RequestGarbageCollectionForTesting() {
 }
 
 func (i *Isolate) Terminate() {
-	log.Println("ATTEMPTING TO TERMINATE")
-	i.mutex.Lock()
-	log.Println("TERMINATING")
+	i.isolateMutex.Lock()
+	i.terminationMutex.Lock()
 	C.v8_Isolate_Terminate(i.pointer)
 	i.running = false
-	i.mutex.Unlock()
+	i.terminationMutex.Unlock()
 
 	for _, context := range i.contexts.Refs() {
-		context.(*Context).terminate()
+		context.(*Context).release()
 	}
+	C.v8_Isolate_Release(i.pointer)
+	i.pointer = nil
+	i.isolateMutex.Unlock()
+
+	tracer.Remove(i)
+	isolates.Release(i)
 
 	vi := reflect.ValueOf(i)
 	for _, shutdownHook := range i.shutdownHooks {
 		reflect.ValueOf(shutdownHook).Call([]reflect.Value{vi})
 	}
 	i.shutdownHooks = nil
+
+	i.data = nil
 }
 
 func (i *Isolate) SendLowMemoryNotification() {
@@ -189,12 +199,8 @@ func (i *Isolate) newError(err C.Error) error {
 }
 
 func (i *Isolate) release() {
-	tracer.Remove(i)
-	isolates.Unref(i)
-	C.v8_Isolate_Release(i.pointer)
-	i.pointer = nil
-	isolates.Release(i)
 	runtime.SetFinalizer(i, nil)
+	i.Terminate()
 }
 
 func newSnapshot(data C.StartupData) *Snapshot {

@@ -3,6 +3,7 @@ package v8
 import (
 	"fmt"
 	"io"
+	"log"
 	"reflect"
 	"runtime"
 	"runtime/debug"
@@ -169,18 +170,22 @@ func (t *simpleTracer) Add(value refutils.Ref) {
 	} else {
 		t.channel <- &simpleTracerMessage{Add: &simpleTracerAddMessage{value, debug.Stack()}}
 	}
-
 }
 
 func (t *simpleTracer) remove(value refutils.Ref) {
 	name, rm := t.weakReferenceMapForReference(value)
 
+	removed := false
 	if t.stackTraces != nil {
 		if _, ok := t.stackTraces[name]; ok {
 			i := rm.GetID(value)
 			if _, ok := t.stackTraces[name][i]; ok {
 				delete(t.stackTraces[name], i)
+				removed = true
 			}
+		}
+		if !removed {
+			log.Fatal("couldn't find stack trace for ref", value)
 		}
 	}
 
@@ -254,6 +259,12 @@ func (t *simpleTracer) Dump(w io.Writer, allocations bool) {
 		stats[name] = 0
 		for _, referenceMap := range referenceMaps {
 			stats[name] += uint64(referenceMap.Length())
+		}
+	}
+	if t.stackTraces != nil {
+		stats["stackTraces:total"] = 0
+		for name, stackTraces := range t.stackTraces {
+			stats[fmt.Sprintf("stackTraces:%s", name)] = uint64(len(stackTraces))
 		}
 	}
 

@@ -8,7 +8,6 @@ import "C"
 import (
 	"errors"
 	"fmt"
-	"log"
 	"reflect"
 	"runtime"
 	"strconv"
@@ -194,24 +193,20 @@ func (v *Value) Call(self *Value, argv ...*Value) (*Value, error) {
 		defer v.context.isolate.unlock()
 	}
 
-	log.Println("Call", v)
-	defer log.Println("Call:exit")
 	pargv := make([]C.ValuePtr, len(argv)+1)
 	for i, argvi := range argv {
 		pargv[i] = argvi.pointer
 	}
 
-	log.Println("HERE0")
 	pself := C.ValuePtr(nil)
 	if self != nil {
 		pself = self.pointer
 	}
-	log.Println("HERE1")
+
 	v.context.ref()
 	defer v.context.unref()
-	log.Println("HERE2", v.context.pointer, v.pointer, pself, len(argv), pargv)
+
 	vt := C.v8_Value_Call(v.context.pointer, v.pointer, pself, C.int(len(argv)), &pargv[0])
-	log.Println("HERE3")
 	return v.context.newValueFromTuple(vt)
 }
 
@@ -221,9 +216,6 @@ func (v *Value) CallMethod(name string, argv ...*Value) (*Value, error) {
 	} else {
 		defer v.context.isolate.unlock()
 	}
-
-	log.Println("CallMethod", name)
-	defer log.Println("CallMethod:exit", name)
 
 	if m, err := v.Get(name); err != nil {
 		return nil, err
@@ -370,7 +362,7 @@ func (v *Value) receiver() *valueRef {
 	}
 
 	intfield, err := v.GetInternalField(0)
-	log.Println("internal field:", intfield)
+
 	if err != nil {
 		return nil
 	}
@@ -387,7 +379,6 @@ func (v *Value) receiver() *valueRef {
 	if vref, ok := ref.(*valueRef); !ok {
 		return nil
 	} else {
-		log.Println("valueRef:", vref)
 		return vref
 	}
 }
@@ -429,7 +420,6 @@ func (v *Value) Receiver(t reflect.Type) *reflect.Value {
 }
 
 func (v *Value) SetReceiver(value *reflect.Value) {
-	log.Println("SetReceiver", value)
 	if !v.IsKind(KindObject) {
 		return
 	}
