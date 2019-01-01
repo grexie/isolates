@@ -25,12 +25,11 @@ type Context struct {
 	vfalse    *Value
 	vtrue     *Value
 
-	functionCache map[uintptr]*Value
-	functions     *refutils.RefMap
-	accessors     *refutils.RefMap
-	values        *refutils.RefMap
-	refs          *refutils.RefMap
-	objects       map[uintptr]*Value
+	functions *refutils.RefMap
+	accessors *refutils.RefMap
+	values    *refutils.RefMap
+	refs      *refutils.RefMap
+	objects   map[uintptr]*Value
 
 	baseConstructor *FunctionTemplate
 	constructors    map[reflect.Type]*FunctionTemplate
@@ -176,7 +175,7 @@ func (c *Context) ParseJSON(json string) (*Value, error) {
 	return c.newValueFromTuple(C.v8_JSON_Parse(c.pointer, pjson))
 }
 
-func (c *Context) terminate() {
+func (c *Context) release() {
 	c.global = nil
 	c.undefined = nil
 	c.null = nil
@@ -193,9 +192,7 @@ func (c *Context) terminate() {
 	c.constructors = nil
 
 	c.weakCallbacks = nil
-}
 
-func (c *Context) release() {
 	tracer.RemoveRefMap("functionInfo", c.functions)
 	tracer.RemoveRefMap("accessorInfo", c.accessors)
 	tracer.RemoveRefMap("valueRef", c.values)
@@ -208,9 +205,9 @@ func (c *Context) release() {
 
 	if c.pointer != nil {
 		C.v8_Context_Release(c.pointer)
+		c.pointer = nil
 	}
-	c.pointer = nil
+
 	c.isolate.contexts.Release(c)
 	runtime.SetFinalizer(c, nil)
-	c.isolate = nil
 }

@@ -245,9 +245,7 @@ func (f *FunctionTemplate) release() {
 	}
 
 	if f.pointer != nil {
-		f.context.ref()
 		C.v8_FunctionTemplate_Release(f.context.pointer, f.pointer)
-		f.context.unref()
 	}
 
 	f.info = nil
