@@ -95,6 +95,27 @@ func (i *Isolate) unref() {
 	isolates.Unref(i)
 }
 
+func MyCaller() string {
+
+	// we get the callers as uintptrs - but we just need 1
+	fpcs := make([]uintptr, 1)
+
+	// skip 3 levels to get to the caller of whoever called Caller()
+	n := runtime.Callers(3, fpcs)
+	if n == 0 {
+		return "n/a" // proper error her would be better
+	}
+
+	// get the info of the actual function that's in the pointer
+	fun := runtime.FuncForPC(fpcs[0] - 1)
+	if fun == nil {
+		return "n/a"
+	}
+
+	// return its name
+	return fun.Name()
+}
+
 func (i *Isolate) lock() error {
 	i.terminationMutex.RefLock()
 	if !i.running {
@@ -140,8 +161,21 @@ func (i *Isolate) RequestGarbageCollectionForTesting() {
 func (i *Isolate) Terminate() {
 	i.isolateMutex.Lock()
 	i.terminationMutex.Lock()
+	if !i.running {
+		return
+	}
 	C.v8_Isolate_Terminate(i.pointer)
 	i.running = false
+
+	contexts := i.contexts.Refs()
+	for _, c := range contexts {
+		context := c.(*Context)
+		if context.pointer != nil {
+			C.v8_Context_Release(context.pointer)
+			context.pointer = nil
+		}
+	}
+
 	i.terminationMutex.Unlock()
 
 	for _, context := range i.contexts.Refs() {

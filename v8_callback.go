@@ -136,6 +136,12 @@ func CallbackHandler(info *C.CallbackInfo) (r C.ValueTuple) {
 	args := callbackArgs{context, callerInfo, self, holder}
 	v, err := callbackHandlers[info._type](context, *info, args, refutils.ID(callbackId))
 
+	if err := isolate.lock(); err != nil {
+		return C.ValueTuple{}
+	} else {
+		defer isolate.unlock()
+	}
+
 	if err != nil {
 		m := err.Error()
 		cerr := C.Error{data: C.CString(m), length: C.int(len(m))}

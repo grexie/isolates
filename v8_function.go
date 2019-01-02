@@ -244,7 +244,7 @@ func (f *FunctionTemplate) release() {
 		defer f.context.isolate.unlock()
 	}
 
-	if f.pointer != nil {
+	if f.context.pointer != nil {
 		C.v8_FunctionTemplate_Release(f.context.pointer, f.pointer)
 	}
 
@@ -303,7 +303,7 @@ func (o *ObjectTemplate) release() {
 		defer o.context.isolate.unlock()
 	}
 
-	if o.pointer != nil {
+	if o.context.pointer != nil {
 		o.context.ref()
 		C.v8_ObjectTemplate_Release(o.context.pointer, o.pointer)
 		o.context.unref()

@@ -520,26 +520,17 @@ func (v *Value) release() {
 	// } else {
 	// 	v.finalize()
 	// }
-	v.finalize()
-	runtime.SetFinalizer(v, nil)
-}
+	tracer.Remove(v)
 
-func (v *Value) finalize() {
-	if v.pointer != nil {
-		tracer.Remove(v)
-		// if id := v.getID("r"); id != 0 {
-		// 	if vref := v.context.values.Get(id); vref != nil {
-		// 		log.Println("releasing valueRef", id)
-		// 		v.context.values.Release(vref)
-		// 	}
-		// }
-
-		if err := v.context.isolate.lock(); err == nil {
-			defer v.context.isolate.unlock()
-		}
-
-		C.v8_Value_Release(v.context.pointer, v.pointer)
-		v.context = nil
-		v.pointer = nil
+	if err := v.context.isolate.lock(); err == nil {
+		defer v.context.isolate.unlock()
 	}
+
+	if v.context.pointer != nil {
+		C.v8_Value_Release(v.context.pointer, v.pointer)
+	}
+	v.context = nil
+	v.pointer = nil
+
+	runtime.SetFinalizer(v, nil)
 }

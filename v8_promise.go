@@ -108,7 +108,7 @@ func (r *Resolver) release() {
 		defer r.context.isolate.unlock()
 	}
 
-	if r.pointer != nil {
+	if r.context.pointer != nil {
 		C.v8_Resolver_Release(r.context.pointer, r.pointer)
 	}
 	r.context = nil

@@ -176,6 +176,8 @@ func (c *Context) ParseJSON(json string) (*Value, error) {
 }
 
 func (c *Context) release() {
+	runtime.SetFinalizer(c, nil)
+
 	c.global = nil
 	c.undefined = nil
 	c.null = nil
@@ -209,5 +211,5 @@ func (c *Context) release() {
 	}
 
 	c.isolate.contexts.Release(c)
-	runtime.SetFinalizer(c, nil)
+
 }
