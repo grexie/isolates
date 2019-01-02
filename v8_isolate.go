@@ -137,6 +137,7 @@ func (i *Isolate) Terminate() {
 	runtime.SetFinalizer(i, nil)
 	i.mutex.Lock()
 	if !i.running {
+		i.mutex.Unlock()
 		return
 	}
 	C.v8_Isolate_Terminate(i.pointer)
