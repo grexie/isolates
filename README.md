@@ -4,7 +4,7 @@
 
 To use import v8:
 
-```
+```go
 import (
   v8 "github.com/behrsin/go-v8"
 )
@@ -38,7 +38,7 @@ For now, please follow his instructions for installation of the v8 libraries and
 There's a script included `install-v8.sh` that can be used to install the version of libraries this library is developed
 against for both ARMv6 and AMD64 (linux and macOS):
 
-```
+```bash
 ./path/to/behrsin/go-v8/install-v8.sh
 ```
 
