@@ -273,7 +273,7 @@ func (t *simpleTracer) Dump(w io.Writer, allocations bool) {
 	}
 	if t.stackTraces != nil {
 		stats["stackTraces"] = 0
-		for name, stackTraces := range t.stackTraces {
+		for _, stackTraces := range t.stackTraces {
 			stats["stackTraces"] += uint64(len(stackTraces))
 		}
 	}

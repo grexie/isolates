@@ -103,7 +103,7 @@ extern "C" {
       isolate->Exit();
       v8::Unlocker unlocker(isolate);
 
-      result = CallbackHandler(CallbackInfo{
+      result = callbackHandler(CallbackInfo{
         kFunctionCallback,
         id,
         callerInfo,
@@ -143,7 +143,7 @@ extern "C" {
       isolate->Exit();
       v8::Unlocker unlocker(isolate);
 
-      result = CallbackHandler(CallbackInfo{
+      result = callbackHandler(CallbackInfo{
         kGetterCallback,
         id,
         callerInfo,
@@ -184,7 +184,7 @@ extern "C" {
       isolate->Exit();
       v8::Unlocker unlocker(isolate);
 
-      result = CallbackHandler(CallbackInfo{
+      result = callbackHandler(CallbackInfo{
         kSetterCallback,
         id,
         callerInfo,
