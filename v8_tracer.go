@@ -112,7 +112,8 @@ func newSimpleTracer() *simpleTracer {
 
 func (t *simpleTracer) Start() {
 	go func() {
-		for m := range t.channel {
+		ch := t.channel
+		for m := range ch {
 			t.mutex.RLock()
 			if m.Add != nil {
 				t.add(m.Add.Ref, m.Add.StackTrace)
@@ -152,6 +153,15 @@ func (t *simpleTracer) weakReferenceMapForReference(value refutils.Ref) (string,
 	return name, m
 }
 
+func (t *simpleTracer) write(m *simpleTracerMessage) {
+	defer func() {
+		if r := recover(); r != nil {
+
+		}
+	}()
+	t.channel <- m
+}
+
 func (t *simpleTracer) add(value refutils.Ref, stack []byte) {
 	name, rm := t.weakReferenceMapForReference(value)
 	id := rm.Ref(value)
@@ -166,9 +176,9 @@ func (t *simpleTracer) add(value refutils.Ref, stack []byte) {
 
 func (t *simpleTracer) Add(value refutils.Ref) {
 	if t.stackTraces == nil {
-		t.channel <- &simpleTracerMessage{Add: &simpleTracerAddMessage{value, nil}}
+		t.write(&simpleTracerMessage{Add: &simpleTracerAddMessage{value, nil}})
 	} else {
-		t.channel <- &simpleTracerMessage{Add: &simpleTracerAddMessage{value, debug.Stack()}}
+		t.write(&simpleTracerMessage{Add: &simpleTracerAddMessage{value, debug.Stack()}})
 	}
 }
 
@@ -193,7 +203,7 @@ func (t *simpleTracer) remove(value refutils.Ref) {
 }
 
 func (t *simpleTracer) Remove(value refutils.Ref) {
-	t.channel <- &simpleTracerMessage{Remove: value}
+	t.write(&simpleTracerMessage{Remove: value})
 }
 
 func (t *simpleTracer) addRefMap(name string, refMap *refutils.RefMap) {
@@ -205,7 +215,7 @@ func (t *simpleTracer) addRefMap(name string, refMap *refutils.RefMap) {
 }
 
 func (t *simpleTracer) AddRefMap(name string, refMap *refutils.RefMap) {
-	t.channel <- &simpleTracerMessage{AddRefMap: &simpleTracerRefMapMessage{name, refMap}}
+	t.write(&simpleTracerMessage{AddRefMap: &simpleTracerRefMapMessage{name, refMap}})
 }
 
 func (t *simpleTracer) removeRefMap(name string, refMap *refutils.RefMap) {
@@ -226,7 +236,7 @@ func (t *simpleTracer) removeRefMap(name string, refMap *refutils.RefMap) {
 }
 
 func (t *simpleTracer) RemoveRefMap(name string, refMap *refutils.RefMap) {
-	t.channel <- &simpleTracerMessage{RemoveRefMap: &simpleTracerRefMapMessage{name, refMap}}
+	t.write(&simpleTracerMessage{RemoveRefMap: &simpleTracerRefMapMessage{name, refMap}})
 }
 
 func sortedMapStringUint64(m map[string]uint64, f func(k string, v uint64)) {
@@ -262,9 +272,9 @@ func (t *simpleTracer) Dump(w io.Writer, allocations bool) {
 		}
 	}
 	if t.stackTraces != nil {
-		stats["stackTraces:total"] = 0
+		stats["stackTraces"] = 0
 		for name, stackTraces := range t.stackTraces {
-			stats[fmt.Sprintf("stackTraces:%s", name)] = uint64(len(stackTraces))
+			stats["stackTraces"] += uint64(len(stackTraces))
 		}
 	}
 

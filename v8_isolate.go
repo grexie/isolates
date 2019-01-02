@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"reflect"
 	"runtime"
-	"sync"
 	"unsafe"
 
 	refutils "github.com/behrsin/go-refutils"
@@ -43,13 +42,10 @@ type HeapStatistics struct {
 	DoesZapGarbage          bool
 }
 
-var initOnce sync.Once
 var isolates = refutils.NewWeakRefMap("i")
 
 func NewIsolate() *Isolate {
-	initOnce.Do(func() {
-		C.v8_Initialize()
-	})
+	Initialize()
 
 	isolate := &Isolate{
 		pointer:       C.v8_Isolate_New(C.StartupData{data: nil, length: 0}),
@@ -67,9 +63,7 @@ func NewIsolate() *Isolate {
 }
 
 func NewIsolateWithSnapshot(snapshot *Snapshot) *Isolate {
-	initOnce.Do(func() {
-		C.v8_Initialize()
-	})
+	Initialize()
 
 	isolate := &Isolate{
 		pointer:       C.v8_Isolate_New(snapshot.data),
@@ -135,6 +129,7 @@ func (i *Isolate) RequestGarbageCollectionForTesting() {
 
 func (i *Isolate) Terminate() {
 	runtime.SetFinalizer(i, nil)
+	isolates.Release(i)
 	i.mutex.Lock()
 	if !i.running {
 		i.mutex.Unlock()
