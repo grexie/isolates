@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"reflect"
-	"runtime"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -256,18 +256,13 @@ func sortedMapStringUint64(m map[string]uint64, f func(k string, v uint64)) {
 }
 
 func (t *simpleTracer) Dump(w io.Writer, allocations bool) {
-	runtime.GC()
-	// for _, isolate := range isolates.Refs() {
-	// 	isolate.(*Isolate).RequestGarbageCollectionForTesting()
-	// }
-
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
 	stats := map[string]uint64{}
 
 	fmt.Fprintf(w, "%s\n", strings.Repeat("=", 80))
-	fmt.Fprintf(w, "V8 Golang Tracer Dump\n%s\n", time.Now())
+	fmt.Fprintf(w, "V8\n%s\n", time.Now())
 	fmt.Fprintf(w, "%s\n", strings.Repeat("-", 80))
 
 	for name, referenceMaps := range t.referenceMaps {
@@ -344,4 +339,23 @@ func (t *simpleTracer) Dump(w io.Writer, allocations bool) {
 	}
 
 	fmt.Fprintf(w, "%s\n", strings.Repeat("-", 80))
+}
+
+func TracerHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`<!DOCTYPE html>
+<html>
+<head>
+<title>V8</title>
+<meta http-equiv="refresh" content="1">
+</head>
+<body>
+<pre>
+`))
+		tracer.Dump(w, false)
+		w.Write([]byte(`
+</pre>
+</body>
+</html>`))
+	})
 }
