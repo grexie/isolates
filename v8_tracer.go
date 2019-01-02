@@ -3,28 +3,28 @@ package v8
 import (
 	"fmt"
 	"io"
+	"log"
+	"net/http"
 	"reflect"
-	"runtime"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	refutils "github.com/behrsin/go-refutils"
 )
 
-type tracerObject interface {
-	reference
-	tracerString() string
-}
-
-type tracer interface {
-	AddContext(context *Context)
-	RemoveContext(context *Context)
-	AddValue(value *Value)
-	RemoveValue(value *Value)
-	AddReferenceMap(name string, referenceMap *referenceMap)
+type itracer interface {
+	Start()
+	Stop()
+	EnableAllocationStackTraces()
+	DisableAllocationStackTraces()
+	Add(value refutils.Ref)
+	Remove(value refutils.Ref)
+	AddRefMap(name string, referenceMap *refutils.RefMap)
+	RemoveRefMap(name string, referenceMap *refutils.RefMap)
 	Dump(w io.Writer, allocations bool)
-	Lock()
-	Unlock()
 }
 
 type TracerType uint8
@@ -33,103 +33,218 @@ const (
 	SimpleTracer TracerType = iota
 )
 
-func (i *Isolate) StartTracer(t TracerType) {
+var tracer = itracer(&nullTracer{})
+
+func EnableAllocationStackTraces() {
+	tracer.EnableAllocationStackTraces()
+}
+
+func DisableAllocationStackTraces() {
+	tracer.DisableAllocationStackTraces()
+}
+
+func StartTracer(t TracerType) {
+	tracer.Stop()
+
 	switch t {
 	case SimpleTracer:
-		i.tracer = newSimpleTracer(i)
+		tracer = newSimpleTracer()
 	}
 
-	i.tracer.AddReferenceMap("isolates", isolates)
-	i.tracer.AddReferenceMap("contexts", i.contexts)
+	tracer.Start()
 }
 
-func (i *Isolate) StopTracer(t TracerType) {
-	i.tracer = &nullTracer{}
+func StopTracer(t TracerType) {
+	tracer.Stop()
+	tracer = &nullTracer{}
 }
 
-func (i *Isolate) DumpTracer(w io.Writer, allocations bool) {
-	go i.tracer.Dump(w, allocations)
+func DumpTracer(w io.Writer, allocations bool) {
+	tracer.Dump(w, allocations)
 }
 
-type nullTracer struct {
+type nullTracer struct{}
+
+func (t *nullTracer) Start()                                            {}
+func (t *nullTracer) Stop()                                             {}
+func (t *nullTracer) EnableAllocationStackTraces()                      {}
+func (t *nullTracer) DisableAllocationStackTraces()                     {}
+func (t *nullTracer) Add(value refutils.Ref)                            {}
+func (t *nullTracer) Remove(value refutils.Ref)                         {}
+func (t *nullTracer) AddRefMap(name string, refMap *refutils.RefMap)    {}
+func (t *nullTracer) RemoveRefMap(name string, refMap *refutils.RefMap) {}
+func (t *nullTracer) Dump(w io.Writer, allocations bool)                {}
+
+type simpleTracerAddMessage struct {
+	Ref        refutils.Ref
+	StackTrace []byte
 }
 
-func (t *nullTracer) AddContext(context *Context) {
-
+type simpleTracerRefMapMessage struct {
+	Name   string
+	RefMap *refutils.RefMap
 }
 
-func (t *nullTracer) RemoveContext(context *Context) {
-
-}
-
-func (t *nullTracer) AddValue(value *Value) {
-
-}
-
-func (t *nullTracer) RemoveValue(value *Value) {
-
-}
-
-func (t *nullTracer) AddReferenceMap(name string, referenceMap *referenceMap) {
-
-}
-
-func (t *nullTracer) Dump(w io.Writer, allocations bool) {
-
-}
-
-func (t *nullTracer) Lock() {
-
-}
-
-func (t *nullTracer) Unlock() {
-
+type simpleTracerMessage struct {
+	Add          *simpleTracerAddMessage
+	Remove       refutils.Ref
+	AddRefMap    *simpleTracerRefMapMessage
+	RemoveRefMap *simpleTracerRefMapMessage
 }
 
 type simpleTracer struct {
-	isolate        *Isolate
-	values         *referenceMap
-	referenceMaps  map[string]*referenceMap
-	mutex          *sync.Mutex
-	acquiredLock   uint32
-	acquiringMutex *sync.Mutex
+	channel       chan *simpleTracerMessage
+	mutex         sync.RWMutex
+	referenceMaps map[string][]*refutils.RefMap
+	stackTraces   map[string]map[refutils.ID][]byte
 }
 
-func newSimpleTracer(i *Isolate) *simpleTracer {
+var st *simpleTracer
+
+func newSimpleTracer() *simpleTracer {
 	t := &simpleTracer{
-		isolate:        i,
-		values:         newWeakReferenceMap("tracer", reflect.TypeOf(&Value{})),
-		referenceMaps:  map[string]*referenceMap{},
-		mutex:          &sync.Mutex{},
-		acquiringMutex: &sync.Mutex{},
+		channel:       make(chan *simpleTracerMessage),
+		referenceMaps: map[string][]*refutils.RefMap{},
 	}
+	st = t
 	return t
 }
 
-func (t *simpleTracer) AddContext(context *Context) {
-	t.AddReferenceMap("functionInfos", context.functions)
-	t.AddReferenceMap("accessorInfos", context.accessors)
-	t.AddReferenceMap("valueRefs", context.values)
-	t.AddReferenceMap("refs", context.refs)
+func (t *simpleTracer) Start() {
+	go func() {
+		ch := t.channel
+		for m := range ch {
+			t.mutex.RLock()
+			if m.Add != nil {
+				t.add(m.Add.Ref, m.Add.StackTrace)
+			} else if m.Remove != nil {
+				t.remove(m.Remove)
+			} else if m.AddRefMap != nil {
+				t.addRefMap(m.AddRefMap.Name, m.AddRefMap.RefMap)
+			} else if m.RemoveRefMap != nil {
+				t.removeRefMap(m.RemoveRefMap.Name, m.RemoveRefMap.RefMap)
+			}
+			t.mutex.RUnlock()
+		}
+	}()
 }
 
-func (t *simpleTracer) RemoveContext(context *Context) {
-
+func (t *simpleTracer) Stop() {
+	close(t.channel)
 }
 
-func (t *simpleTracer) AddValue(value *Value) {
-	t.values.Ref(value)
+func (t *simpleTracer) EnableAllocationStackTraces() {
+	t.stackTraces = map[string]map[refutils.ID][]byte{}
 }
 
-func (t *simpleTracer) RemoveValue(value *Value) {
-	t.values.Unref(value)
+func (t *simpleTracer) DisableAllocationStackTraces() {
+	t.stackTraces = nil
 }
 
-func (t *simpleTracer) AddReferenceMap(name string, referenceMap *referenceMap) {
-	t.referenceMaps[name] = referenceMap
+func (t *simpleTracer) weakReferenceMapForReference(value refutils.Ref) (string, *refutils.RefMap) {
+	structType := reflect.ValueOf(value).Elem().Type()
+	name := structType.Name()
+
+	if _, ok := t.referenceMaps[name]; !ok {
+		t.referenceMaps[name] = []*refutils.RefMap{refutils.NewWeakRefMap("v8-tracer")}
+	}
+	m := t.referenceMaps[name][0]
+
+	return name, m
 }
 
-func sortedMapStringString(m map[string]string, f func(k string, v string)) {
+func (t *simpleTracer) write(m *simpleTracerMessage) {
+	defer func() {
+		if r := recover(); r != nil {
+
+		}
+	}()
+	t.channel <- m
+}
+
+func (t *simpleTracer) add(value refutils.Ref, stack []byte) {
+	name, rm := t.weakReferenceMapForReference(value)
+	id := rm.Ref(value)
+
+	if t.stackTraces != nil {
+		if _, ok := t.stackTraces[name]; !ok {
+			t.stackTraces[name] = map[refutils.ID][]byte{}
+		}
+		t.stackTraces[name][id] = stack
+	}
+}
+
+func (t *simpleTracer) Add(value refutils.Ref) {
+	if t.stackTraces == nil {
+		t.write(&simpleTracerMessage{Add: &simpleTracerAddMessage{value, nil}})
+	} else {
+		t.write(&simpleTracerMessage{Add: &simpleTracerAddMessage{value, debug.Stack()}})
+	}
+}
+
+func (t *simpleTracer) remove(value refutils.Ref) {
+	name, rm := t.weakReferenceMapForReference(value)
+
+	removed := false
+	if t.stackTraces != nil {
+		if _, ok := t.stackTraces[name]; ok {
+			i := rm.GetID(value)
+			if _, ok := t.stackTraces[name][i]; ok {
+				delete(t.stackTraces[name], i)
+				removed = true
+			}
+		}
+		if !removed {
+			log.Fatal("couldn't find stack trace for ref", value)
+		}
+	}
+
+	rm.Unref(value)
+}
+
+func (t *simpleTracer) Remove(value refutils.Ref) {
+	t.write(&simpleTracerMessage{Remove: value})
+}
+
+func (t *simpleTracer) addRefMap(name string, refMap *refutils.RefMap) {
+	if _, ok := t.referenceMaps[name]; !ok {
+		t.referenceMaps[name] = []*refutils.RefMap{}
+	}
+
+	t.referenceMaps[name] = append(t.referenceMaps[name], refMap)
+}
+
+func (t *simpleTracer) AddRefMap(name string, refMap *refutils.RefMap) {
+	t.write(&simpleTracerMessage{AddRefMap: &simpleTracerRefMapMessage{name, refMap}})
+}
+
+func (t *simpleTracer) removeRefMap(name string, refMap *refutils.RefMap) {
+	if _, ok := t.referenceMaps[name]; !ok {
+		return
+	}
+
+	removed := false
+	for i, r := range t.referenceMaps[name] {
+		if r == refMap {
+			t.referenceMaps[name] = append(t.referenceMaps[name][:i], t.referenceMaps[name][i+1:]...)
+			removed = true
+			break
+		}
+	}
+	if !removed {
+		log.Fatal("couldn't find ref map", name, refMap)
+	}
+
+	if len(t.referenceMaps[name]) == 0 {
+		delete(t.referenceMaps, name)
+	}
+}
+
+func (t *simpleTracer) RemoveRefMap(name string, refMap *refutils.RefMap) {
+	t.write(&simpleTracerMessage{RemoveRefMap: &simpleTracerRefMapMessage{name, refMap}})
+}
+
+func sortedMapStringUint64(m map[string]uint64, f func(k string, v uint64)) {
 	var keys []string
 	for k, _ := range m {
 		keys = append(keys, k)
@@ -141,104 +256,106 @@ func sortedMapStringString(m map[string]string, f func(k string, v string)) {
 }
 
 func (t *simpleTracer) Dump(w io.Writer, allocations bool) {
-	runtime.GC()
-	t.isolate.RequestGarbageCollectionForTesting()
-
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
-	values := t.values.References()
-	valuesCreated := []reference{}
-	for _, v := range values {
-		if v.(*Value).created {
-			valuesCreated = append(valuesCreated, v)
+	stats := map[string]uint64{}
+
+	fmt.Fprintf(w, "%s\n", strings.Repeat("=", 80))
+	fmt.Fprintf(w, "V8\n%s\n", time.Now())
+	fmt.Fprintf(w, "%s\n", strings.Repeat("-", 80))
+
+	for name, referenceMaps := range t.referenceMaps {
+		stats[name] = 0
+		for _, referenceMap := range referenceMaps {
+			stats[name] += uint64(referenceMap.Length())
+		}
+	}
+	if t.stackTraces != nil {
+		stats["stackTraces"] = 0
+		for _, stackTraces := range t.stackTraces {
+			stats["stackTraces"] += uint64(len(stackTraces))
 		}
 	}
 
-	stats := map[string]string{}
-
-	fmt.Fprintf(w, "%s\n", strings.Repeat("=", 80))
-	fmt.Fprintf(w, "V8 Golang Tracer Dump\n%s\n", time.Now())
-	fmt.Fprintf(w, "%s\n", strings.Repeat("-", 80))
-	stats["values"] = fmt.Sprintf("%d (of which %d are owned by go)", len(values), len(valuesCreated))
-
-	for name, referenceMap := range t.referenceMaps {
-		stats[name] = fmt.Sprintf("%d", referenceMap.Length())
-	}
-
-	sortedMapStringString(stats, func(name, value string) {
-		fmt.Fprintf(w, "%s: %s\n", name, value)
+	sortedMapStringUint64(stats, func(name string, value uint64) {
+		fmt.Fprintf(w, "%s: %d\n", name, value)
 	})
 
-	stats = map[string]string{}
+	stats = map[string]uint64{}
 	fmt.Fprintf(w, "%s\n", strings.Repeat("-", 80))
 	fmt.Fprintf(w, "V8 Isolate Heap Statistics:\n\n")
 
-	hs := t.isolate.GetHeapStatistics()
-	stats["total heap size"] = fmt.Sprintf("%d", hs.TotalHeapSize)
-	stats["total heap size executable"] = fmt.Sprintf("%d", hs.TotalHeapSizeExecutable)
-	stats["total physical size"] = fmt.Sprintf("%d", hs.TotalPhysicalSize)
-	stats["total available size"] = fmt.Sprintf("%d", hs.TotalAvailableSize)
-	stats["used heap size"] = fmt.Sprintf("%d", hs.UsedHeapSize)
-	stats["heap size limit"] = fmt.Sprintf("%d", hs.HeapSizeLimit)
-	stats["malloced memory"] = fmt.Sprintf("%d", hs.MallocedMemory)
-	stats["peak malloced memory"] = fmt.Sprintf("%d", hs.PeakMallocedMemory)
-	stats["does zap garbage"] = fmt.Sprintf("%t", hs.DoesZapGarbage)
+	stats["total heap size"] = 0
+	stats["total heap size executable"] = 0
+	stats["total physical size"] = 0
+	stats["total available size"] = 0
+	stats["used heap size"] = 0
+	stats["heap size limit"] = 0
+	stats["malloced memory"] = 0
+	stats["peak malloced memory"] = 0
 
-	sortedMapStringString(stats, func(name, value string) {
-		fmt.Fprintf(w, "%s: %s\n", name, value)
+	for _, isolate := range isolates.Refs() {
+		if hs, err := isolate.(*Isolate).GetHeapStatistics(); err != nil {
+			continue
+		} else {
+			stats["total heap size"] += hs.TotalHeapSize
+			stats["total heap size executable"] += hs.TotalHeapSizeExecutable
+			stats["total physical size"] += hs.TotalPhysicalSize
+			stats["total available size"] += hs.TotalAvailableSize
+			stats["used heap size"] += hs.UsedHeapSize
+			stats["heap size limit"] += hs.HeapSizeLimit
+			stats["malloced memory"] += hs.MallocedMemory
+			stats["peak malloced memory"] += hs.PeakMallocedMemory
+		}
+	}
+
+	sortedMapStringUint64(stats, func(name string, value uint64) {
+		fmt.Fprintf(w, "%s: %d\n", name, value)
 	})
 
 	if allocations {
 		fmt.Fprintf(w, "%s\n", strings.Repeat("-", 80))
 
-		for i, ref := range values {
-			object := ref.(*Value)
+		for name, maps := range t.referenceMaps {
+			for _, rm := range maps {
+				for id, ref := range rm.Refs() {
+					if id == 0 {
+						fmt.Fprintf(w, "  0x%08x (%s): %s\n", id, name, "(defunct)")
+						continue
+					}
 
-			fmt.Fprintf(w, "  0x%08x (%s): %s\n", i, "v8.Value", object.tracerString())
+					fmt.Fprintf(w, "  0x%08x (%s): %#v\n", id, name, ref)
+					if t.stackTraces != nil {
+						if traces, ok := t.stackTraces[name]; ok {
+							if b, ok := traces[id]; ok {
+								fmt.Fprintf(w, "    %s\n", strings.Replace(string(b), "\n", "\n    ", -1))
+							}
+						}
+					}
+				}
+			}
 		}
 	}
 
 	fmt.Fprintf(w, "%s\n", strings.Repeat("-", 80))
 }
 
-func MyCaller() string {
-
-	// we get the callers as uintptrs - but we just need 1
-	fpcs := make([]uintptr, 1)
-
-	// skip 3 levels to get to the caller of whoever called Caller()
-	n := runtime.Callers(3, fpcs)
-	if n == 0 {
-		return "n/a" // proper error her would be better
-	}
-
-	// get the info of the actual function that's in the pointer
-	fun := runtime.FuncForPC(fpcs[0] - 1)
-	if fun == nil {
-		return "n/a"
-	}
-
-	// return its name
-	return fun.Name()
-}
-
-func (t *simpleTracer) Lock() {
-	t.acquiringMutex.Lock()
-	defer t.acquiringMutex.Unlock()
-
-	if t.acquiredLock == 0 {
-		t.mutex.Lock()
-	}
-	t.acquiredLock++
-}
-
-func (t *simpleTracer) Unlock() {
-	t.acquiringMutex.Lock()
-	defer t.acquiringMutex.Unlock()
-
-	t.acquiredLock--
-	if t.acquiredLock == 0 {
-		t.mutex.Unlock()
-	}
+func TracerHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`<!DOCTYPE html>
+<html>
+<head>
+<title>V8</title>
+<meta http-equiv="refresh" content="1">
+</head>
+<body>
+<pre>
+`))
+		tracer.Dump(w, false)
+		w.Write([]byte(`
+</pre>
+</body>
+</html>`))
+	})
 }

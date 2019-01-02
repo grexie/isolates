@@ -98,18 +98,25 @@ extern "C" {
       argv[i] = v8_Value_ValueTuple(isolate, info[i]);
     }
 
-    ValueTuple result = CallbackHandler(CallbackInfo{
-      kFunctionCallback,
-      id,
-      callerInfo,
-      self,
-      holder,
-      info.IsConstructCall(),
-      argc,
-      argv,
-      String{NULL, 0},
-      NULL
-    });
+    ValueTuple result;
+    {
+      isolate->Exit();
+      v8::Unlocker unlocker(isolate);
+
+      result = callbackHandler(CallbackInfo{
+        kFunctionCallback,
+        id,
+        callerInfo,
+        self,
+        holder,
+        info.IsConstructCall(),
+        argc,
+        argv,
+        String{NULL, 0},
+        NULL
+      });
+    }
+    isolate->Enter();
 
     if (result.error.data != NULL) {
       v8::Local<v8::Value> error = v8::Exception::Error(v8_String_FromString(isolate, result.error));
@@ -131,18 +138,25 @@ extern "C" {
     ValueTuple holder = v8_Value_ValueTuple(isolate, info.Holder());
     String key = v8_String_Create(property);
 
-    ValueTuple result = CallbackHandler(CallbackInfo{
-      kGetterCallback,
-      id,
-      callerInfo,
-      self,
-      holder,
-      false,
-      0,
-      NULL,
-      key,
-      NULL
-    });
+    ValueTuple result;
+    {
+      isolate->Exit();
+      v8::Unlocker unlocker(isolate);
+
+      result = callbackHandler(CallbackInfo{
+        kGetterCallback,
+        id,
+        callerInfo,
+        self,
+        holder,
+        false,
+        0,
+        NULL,
+        key,
+        NULL
+      });
+    }
+    isolate->Enter();
 
     if (result.error.data != NULL) {
       v8::Local<v8::Value> error = v8::Exception::Error(v8_String_FromString(isolate, result.error));
@@ -165,18 +179,25 @@ extern "C" {
     String key = v8_String_Create(property);
     ValueTuple valueTuple = v8_Value_ValueTuple(isolate, value);
 
-    ValueTuple result = CallbackHandler(CallbackInfo{
-      kSetterCallback,
-      id,
-      callerInfo,
-      self,
-      holder,
-      false,
-      0,
-      NULL,
-      key,
-      valueTuple
-    });
+    ValueTuple result;
+    {
+      isolate->Exit();
+      v8::Unlocker unlocker(isolate);
+
+      result = callbackHandler(CallbackInfo{
+        kSetterCallback,
+        id,
+        callerInfo,
+        self,
+        holder,
+        false,
+        0,
+        NULL,
+        key,
+        valueTuple
+      });
+    }
+    isolate->Enter();
 
     if (result.error.data != NULL) {
       v8::Local<v8::Value> error = v8::Exception::Error(v8_String_FromString(isolate, result.error));

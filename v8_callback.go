@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"unsafe"
+
+	refutils "github.com/behrsin/go-refutils"
 )
 
 type callbackArgs struct {
@@ -20,7 +22,7 @@ type callbackArgs struct {
 	Holder  *Value
 }
 
-func FunctionCallbackHandler(context *Context, info *C.CallbackInfo, args *callbackArgs, functionId id) (*Value, error) {
+func functionCallbackHandler(context *Context, info C.CallbackInfo, args callbackArgs, functionId refutils.ID) (*Value, error) {
 	functionRef := context.functions.Get(functionId)
 	if functionRef == nil {
 		panic(fmt.Errorf("missing function pointer during callback for function #%d", functionId))
@@ -44,7 +46,7 @@ func FunctionCallbackHandler(context *Context, info *C.CallbackInfo, args *callb
 	})
 }
 
-func GetterCallbackHandler(context *Context, info *C.CallbackInfo, args *callbackArgs, accessorId id) (*Value, error) {
+func getterCallbackHandler(context *Context, info C.CallbackInfo, args callbackArgs, accessorId refutils.ID) (*Value, error) {
 	accessorRef := context.accessors.Get(accessorId)
 	if accessorRef == nil {
 		panic(fmt.Errorf("missing function pointer during callback for getter #%d", accessorId))
@@ -60,7 +62,7 @@ func GetterCallbackHandler(context *Context, info *C.CallbackInfo, args *callbac
 	})
 }
 
-func SetterCallbackHandler(context *Context, info *C.CallbackInfo, args *callbackArgs, accessorId id) (*Value, error) {
+func setterCallbackHandler(context *Context, info C.CallbackInfo, args callbackArgs, accessorId refutils.ID) (*Value, error) {
 	accessorRef := context.accessors.Get(accessorId)
 	if accessorRef == nil {
 		panic(fmt.Errorf("missing function pointer during callback for setter #%d", accessorId))
@@ -79,14 +81,14 @@ func SetterCallbackHandler(context *Context, info *C.CallbackInfo, args *callbac
 	})
 }
 
-var callbackHandlers = map[C.CallbackType]func(*Context, *C.CallbackInfo, *callbackArgs, id) (*Value, error){
-	C.kFunctionCallback: FunctionCallbackHandler,
-	C.kGetterCallback:   GetterCallbackHandler,
-	C.kSetterCallback:   SetterCallbackHandler,
+var callbackHandlers = map[C.CallbackType]func(*Context, C.CallbackInfo, callbackArgs, refutils.ID) (*Value, error){
+	C.kFunctionCallback: functionCallbackHandler,
+	C.kGetterCallback:   getterCallbackHandler,
+	C.kSetterCallback:   setterCallbackHandler,
 }
 
-//export CallbackHandler
-func CallbackHandler(info *C.CallbackInfo) (r C.ValueTuple) {
+//export callbackHandler
+func callbackHandler(info *C.CallbackInfo) (r C.ValueTuple) {
 	defer func() {
 		if r := recover(); r != nil {
 			fmt.Println("recovered in callback handler", r)
@@ -100,13 +102,13 @@ func CallbackHandler(info *C.CallbackInfo) (r C.ValueTuple) {
 	contextId, _ := strconv.Atoi(parts[1])
 	callbackId, _ := strconv.Atoi(parts[2])
 
-	isolateRef := isolates.Get(id(isolateId))
+	isolateRef := isolates.Get(refutils.ID(isolateId))
 	if isolateRef == nil {
 		panic(fmt.Errorf("missing isolate pointer during callback for isolate #%d", isolateId))
 	}
 	isolate := isolateRef.(*Isolate)
 
-	contextRef := isolate.contexts.Get(id(contextId))
+	contextRef := isolate.contexts.Get(refutils.ID(contextId))
 	if contextRef == nil {
 		panic(fmt.Errorf("missing context pointer during callback for context #%d", contextId))
 	}
@@ -131,8 +133,14 @@ func CallbackHandler(info *C.CallbackInfo) (r C.ValueTuple) {
 	self, _ := context.newValueFromTuple(info.self)
 	holder, _ := context.newValueFromTuple(info.holder)
 
-	args := &callbackArgs{context, callerInfo, self, holder}
-	v, err := callbackHandlers[info._type](context, info, args, id(callbackId))
+	args := callbackArgs{context, callerInfo, self, holder}
+	v, err := callbackHandlers[info._type](context, *info, args, refutils.ID(callbackId))
+
+	if err := isolate.lock(); err != nil {
+		return C.ValueTuple{}
+	} else {
+		defer isolate.unlock()
+	}
 
 	if err != nil {
 		m := err.Error()
