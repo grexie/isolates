@@ -19,13 +19,12 @@ import (
 type Isolate struct {
 	refutils.RefHolder
 
-	pointer          C.IsolatePtr
-	contexts         *refutils.RefMap
-	terminationMutex refutils.RefMutex
-	isolateMutex     sync.Mutex
-	running          bool
-	data             map[string]interface{}
-	shutdownHooks    []interface{}
+	pointer       C.IsolatePtr
+	contexts      *refutils.RefMap
+	mutex         refutils.RefMutex
+	running       bool
+	data          map[string]interface{}
+	shutdownHooks []interface{}
 }
 
 type Snapshot struct {
@@ -95,38 +94,17 @@ func (i *Isolate) unref() {
 	isolates.Unref(i)
 }
 
-func MyCaller() string {
-
-	// we get the callers as uintptrs - but we just need 1
-	fpcs := make([]uintptr, 1)
-
-	// skip 3 levels to get to the caller of whoever called Caller()
-	n := runtime.Callers(3, fpcs)
-	if n == 0 {
-		return "n/a" // proper error her would be better
-	}
-
-	// get the info of the actual function that's in the pointer
-	fun := runtime.FuncForPC(fpcs[0] - 1)
-	if fun == nil {
-		return "n/a"
-	}
-
-	// return its name
-	return fun.Name()
-}
-
 func (i *Isolate) lock() error {
-	i.terminationMutex.RefLock()
+	i.mutex.RefLock()
 	if !i.running {
-		i.terminationMutex.RefUnlock()
+		i.mutex.RefUnlock()
 		return fmt.Errorf("isolate terminated")
 	}
 	return nil
 }
 
 func (i *Isolate) unlock() {
-	i.terminationMutex.RefUnlock()
+	i.mutex.RefUnlock()
 }
 
 func (i *Isolate) IsRunning() bool {
@@ -146,9 +124,6 @@ func (i *Isolate) SetData(key string, value interface{}) {
 }
 
 func (i *Isolate) RequestGarbageCollectionForTesting() {
-	i.isolateMutex.Lock()
-	defer i.isolateMutex.Unlock()
-
 	if err := i.lock(); err != nil {
 		return
 	} else {
@@ -159,8 +134,8 @@ func (i *Isolate) RequestGarbageCollectionForTesting() {
 }
 
 func (i *Isolate) Terminate() {
-	i.isolateMutex.Lock()
-	i.terminationMutex.Lock()
+	runtime.SetFinalizer(i, nil)
+	i.mutex.Lock()
 	if !i.running {
 		return
 	}
@@ -176,14 +151,13 @@ func (i *Isolate) Terminate() {
 		}
 	}
 
-	i.terminationMutex.Unlock()
+	i.mutex.Unlock()
 
 	for _, context := range i.contexts.Refs() {
 		context.(*Context).release()
 	}
 	C.v8_Isolate_Release(i.pointer)
 	i.pointer = nil
-	i.isolateMutex.Unlock()
 
 	tracer.Remove(i)
 	isolates.Release(i)
@@ -233,7 +207,6 @@ func (i *Isolate) newError(err C.Error) error {
 }
 
 func (i *Isolate) release() {
-	runtime.SetFinalizer(i, nil)
 	i.Terminate()
 }
 
