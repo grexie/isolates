@@ -223,11 +223,16 @@ func (t *simpleTracer) removeRefMap(name string, refMap *refutils.RefMap) {
 		return
 	}
 
+	removed := false
 	for i, r := range t.referenceMaps[name] {
 		if r == refMap {
 			t.referenceMaps[name] = append(t.referenceMaps[name][:i], t.referenceMaps[name][i+1:]...)
+			removed = true
 			break
 		}
+	}
+	if !removed {
+		log.Fatal("couldn't find ref map", name, refMap)
 	}
 
 	if len(t.referenceMaps[name]) == 0 {
