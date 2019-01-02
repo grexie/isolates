@@ -39,6 +39,7 @@ extern "C" {
     if (pIsolate == NULL) {
       return HeapStatistics{0};
     }
+
     ISOLATE_SCOPE(static_cast<v8::Isolate*>(pIsolate));
 
     v8::HeapStatistics hs;

@@ -252,9 +252,9 @@ func sortedMapStringUint64(m map[string]uint64, f func(k string, v uint64)) {
 
 func (t *simpleTracer) Dump(w io.Writer, allocations bool) {
 	runtime.GC()
-	for _, isolate := range isolates.Refs() {
-		isolate.(*Isolate).RequestGarbageCollectionForTesting()
-	}
+	// for _, isolate := range isolates.Refs() {
+	// 	isolate.(*Isolate).RequestGarbageCollectionForTesting()
+	// }
 
 	t.mutex.Lock()
 	defer t.mutex.Unlock()

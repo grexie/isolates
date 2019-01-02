@@ -103,6 +103,7 @@ func (r *Resolver) Promise() (*Value, error) {
 
 func (r *Resolver) release() {
 	tracer.Remove(r)
+	runtime.SetFinalizer(r, nil)
 
 	if err := r.context.isolate.lock(); err == nil {
 		defer r.context.isolate.unlock()
@@ -113,6 +114,4 @@ func (r *Resolver) release() {
 	}
 	r.context = nil
 	r.pointer = nil
-
-	runtime.SetFinalizer(r, nil)
 }

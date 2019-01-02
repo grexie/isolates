@@ -7,11 +7,8 @@ import "C"
 
 import (
 	"errors"
-	"fmt"
 	"reflect"
 	"runtime"
-	"strconv"
-	"strings"
 	"time"
 	"unsafe"
 
@@ -35,6 +32,12 @@ type PropertyDescriptor struct {
 }
 
 func (c *Context) newValueFromTuple(vt C.ValueTuple) (*Value, error) {
+	if err := c.isolate.lock(); err != nil {
+		return nil, err
+	} else {
+		defer c.isolate.unlock()
+	}
+
 	return c.newValue(vt.value, vt.kinds), c.isolate.newError(vt.error)
 }
 
@@ -451,51 +454,51 @@ type weakCallbackInfo struct {
 	callback func()
 }
 
-//export ValueWeakCallbackHandler
-func ValueWeakCallbackHandler(pid C.String) {
-	ids := C.GoStringN(pid.data, pid.length)
-
-	parts := strings.SplitN(ids, ":", 3)
-	isolateId, _ := strconv.Atoi(parts[0])
-	contextId, _ := strconv.Atoi(parts[1])
-
-	isolateRef := isolates.Get(refutils.ID(isolateId))
-	if isolateRef == nil {
-		panic(fmt.Errorf("missing isolate pointer during weak callback for isolate #%d", isolateId))
-	}
-	isolate := isolateRef.(*Isolate)
-
-	contextRef := isolate.contexts.Get(refutils.ID(contextId))
-	if contextRef == nil {
-		panic(fmt.Errorf("missing context pointer during weak callback for context #%d", contextId))
-	}
-	context := contextRef.(*Context)
-
-	context.weakCallbackMutex.Lock()
-	if info, ok := context.weakCallbacks[ids]; !ok {
-		panic(fmt.Errorf("missing callback pointer during weak callback"))
-	} else {
-		context.weakCallbackMutex.Unlock()
-		info.callback()
-		delete(context.weakCallbacks, ids)
-	}
-}
-
-func (v *Value) setWeak(id string, callback func()) error {
-	if err := v.context.isolate.lock(); err != nil {
-		return err
-	} else {
-		defer v.context.isolate.unlock()
-	}
-
-	pid := C.CString(id)
-	defer C.free(unsafe.Pointer(pid))
-
-	v.context.weakCallbackMutex.Lock()
-	v.context.weakCallbacks[id] = &weakCallbackInfo{v, callback}
-	v.context.weakCallbackMutex.Unlock()
-	C.v8_Value_SetWeak(v.context.pointer, v.pointer, pid)
-	return nil
+//export valueWeakCallbackHandler
+func valueWeakCallbackHandler(pid C.String) {
+	// 	ids := C.GoStringN(pid.data, pid.length)
+	//
+	// 	parts := strings.SplitN(ids, ":", 3)
+	// 	isolateId, _ := strconv.Atoi(parts[0])
+	// 	contextId, _ := strconv.Atoi(parts[1])
+	//
+	// 	isolateRef := isolates.Get(refutils.ID(isolateId))
+	// 	if isolateRef == nil {
+	// 		panic(fmt.Errorf("missing isolate pointer during weak callback for isolate #%d", isolateId))
+	// 	}
+	// 	isolate := isolateRef.(*Isolate)
+	//
+	// 	contextRef := isolate.contexts.Get(refutils.ID(contextId))
+	// 	if contextRef == nil {
+	// 		panic(fmt.Errorf("missing context pointer during weak callback for context #%d", contextId))
+	// 	}
+	// 	context := contextRef.(*Context)
+	//
+	// 	context.weakCallbackMutex.Lock()
+	// 	if info, ok := context.weakCallbacks[ids]; !ok {
+	// 		panic(fmt.Errorf("missing callback pointer during weak callback"))
+	// 	} else {
+	// 		context.weakCallbackMutex.Unlock()
+	// 		info.callback()
+	// 		delete(context.weakCallbacks, ids)
+	// 	}
+	// }
+	//
+	// func (v *Value) setWeak(id string, callback func()) error {
+	// 	if err := v.context.isolate.lock(); err != nil {
+	// 		return err
+	// 	} else {
+	// 		defer v.context.isolate.unlock()
+	// 	}
+	//
+	// 	pid := C.CString(id)
+	// 	defer C.free(unsafe.Pointer(pid))
+	//
+	// 	v.context.weakCallbackMutex.Lock()
+	// 	v.context.weakCallbacks[id] = &weakCallbackInfo{v, callback}
+	// 	v.context.weakCallbackMutex.Unlock()
+	// 	C.v8_Value_SetWeak(v.context.pointer, v.pointer, pid)
+	// 	return nil
 }
 
 func (v *Value) release() {
@@ -521,6 +524,7 @@ func (v *Value) release() {
 	// 	v.finalize()
 	// }
 	tracer.Remove(v)
+	runtime.SetFinalizer(v, nil)
 
 	if err := v.context.isolate.lock(); err == nil {
 		defer v.context.isolate.unlock()
@@ -532,5 +536,4 @@ func (v *Value) release() {
 	v.context = nil
 	v.pointer = nil
 
-	runtime.SetFinalizer(v, nil)
 }

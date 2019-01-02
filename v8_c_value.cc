@@ -1,7 +1,7 @@
 
 #include "v8_c_private.h"
 
-extern "C" void ValueWeakCallbackHandler(String id);
+extern "C" void valueWeakCallbackHandler(String id);
 
 typedef struct {
   String id;
@@ -10,7 +10,7 @@ typedef struct {
 void ValueWeakCallback(const v8::WeakCallbackInfo<WeakCallbackParameter>& data) {
   WeakCallbackParameter* param = data.GetParameter();
 
-  ValueWeakCallbackHandler(param->id);
+  valueWeakCallbackHandler(param->id);
 
   delete param->id.data;
   delete param;

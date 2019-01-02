@@ -239,6 +239,9 @@ func (f *FunctionTemplate) GetPrototypeTemplate() (*ObjectTemplate, error) {
 
 func (f *FunctionTemplate) release() {
 	tracer.Remove(f)
+	runtime.SetFinalizer(f, nil)
+	f.info = nil
+	f.value = nil
 
 	if err := f.context.isolate.lock(); err == nil {
 		defer f.context.isolate.unlock()
@@ -248,11 +251,9 @@ func (f *FunctionTemplate) release() {
 		C.v8_FunctionTemplate_Release(f.context.pointer, f.pointer)
 	}
 
-	f.info = nil
-	f.value = nil
 	f.context = nil
 	f.pointer = nil
-	runtime.SetFinalizer(f, nil)
+
 }
 
 func (o *ObjectTemplate) SetInternalFieldCount(count int) error {
@@ -298,18 +299,17 @@ func (o *ObjectTemplate) SetAccessor(name string, getter Getter, setter Setter) 
 
 func (o *ObjectTemplate) release() {
 	tracer.Remove(o)
+	runtime.SetFinalizer(o, nil)
 
 	if err := o.context.isolate.lock(); err == nil {
 		defer o.context.isolate.unlock()
 	}
 
 	if o.context.pointer != nil {
-		o.context.ref()
 		C.v8_ObjectTemplate_Release(o.context.pointer, o.pointer)
-		o.context.unref()
 	}
 
 	o.context = nil
 	o.pointer = nil
-	runtime.SetFinalizer(o, nil)
+
 }

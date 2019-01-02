@@ -91,7 +91,7 @@ func (i *Isolate) unref() {
 func (i *Isolate) lock() error {
 	i.mutex.RefLock()
 	if !i.running {
-		i.mutex.RefUnlock()
+		defer i.mutex.RefUnlock()
 		return fmt.Errorf("isolate terminated")
 	}
 	return nil
@@ -102,6 +102,9 @@ func (i *Isolate) unlock() {
 }
 
 func (i *Isolate) IsRunning() bool {
+	i.mutex.RefLock()
+	defer i.mutex.RefUnlock()
+
 	return i.running
 }
 
@@ -129,12 +132,13 @@ func (i *Isolate) RequestGarbageCollectionForTesting() {
 
 func (i *Isolate) Terminate() {
 	runtime.SetFinalizer(i, nil)
-	isolates.Release(i)
 	i.mutex.Lock()
 	if !i.running {
 		i.mutex.Unlock()
 		return
 	}
+
+	isolates.Release(i)
 	C.v8_Isolate_Terminate(i.pointer)
 	i.running = false
 
@@ -147,13 +151,13 @@ func (i *Isolate) Terminate() {
 		}
 	}
 
+	C.v8_Isolate_Release(i.pointer)
+	i.pointer = nil
 	i.mutex.Unlock()
 
 	for _, context := range i.contexts.Refs() {
 		context.(*Context).release()
 	}
-	C.v8_Isolate_Release(i.pointer)
-	i.pointer = nil
 
 	tracer.Remove(i)
 	isolates.Release(i)
@@ -168,6 +172,12 @@ func (i *Isolate) Terminate() {
 }
 
 func (i *Isolate) SendLowMemoryNotification() {
+	if err := i.lock(); err != nil {
+		return
+	} else {
+		defer i.unlock()
+	}
+
 	C.v8_Isolate_LowMemoryNotification(i.pointer)
 }
 
