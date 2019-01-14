@@ -43,7 +43,7 @@ inline v8::Local<v8::String> v8_StackTrace_FormatException(v8::Isolate* isolate,
 inline CallerInfo v8_StackTrace_CallerInfo(v8::Isolate* isolate);
 
 extern "C" {
-  ValueTuple CallbackHandler(const CallbackInfo& info);
+  ValueTuple callbackHandler(const CallbackInfo& info);
   void GetterCallbackHandler(v8::Local<v8::String> property, const v8::PropertyCallbackInfo<v8::Value>& info);
   void SetterCallbackHandler(v8::Local<v8::String> property, v8::Local<v8::Value> value, const v8::PropertyCallbackInfo<void>& info);
   void FunctionCallbackHandler(const v8::FunctionCallbackInfo<v8::Value>& args);

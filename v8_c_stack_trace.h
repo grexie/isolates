@@ -62,7 +62,7 @@ inline CallerInfo v8_StackTrace_CallerInfo(v8::Isolate* isolate) {
 
   v8::Local<v8::StackTrace> trace(v8::StackTrace::CurrentStackTrace(isolate, 1));
 
-  if (trace->GetFrameCount() == 1) {
+  if (trace->GetFrameCount() >= 1) {
     v8::Local<v8::StackFrame> frame(trace->GetFrame(0));
     src_file = v8_String_ToStdString(frame->GetScriptName());
     src_func = v8_String_ToStdString(frame->GetFunctionName());
@@ -71,8 +71,8 @@ inline CallerInfo v8_StackTrace_CallerInfo(v8::Isolate* isolate) {
   }
 
   return CallerInfo{
-    String{ src_func.data(), int(src_func.length()) },
-    String{ src_file.data(), int(src_file.length()) },
+    v8_String_Create(src_file),
+    v8_String_Create(src_func),
     line_number,
     column
   };

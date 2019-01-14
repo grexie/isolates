@@ -7,6 +7,7 @@ import "C"
 
 import (
 	"fmt"
+	"sync"
 )
 
 // Version exposes the compiled-in version of the linked V8 library.  This can
@@ -39,4 +40,12 @@ func (s PromiseState) String() string {
 		return fmt.Sprintf("InvalidPromiseState:%d", int(s))
 	}
 	return promiseStateStrings[s]
+}
+
+var initOnce sync.Once
+
+func Initialize() {
+	initOnce.Do(func() {
+		C.v8_Initialize()
+	})
 }

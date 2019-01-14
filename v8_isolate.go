@@ -7,17 +7,23 @@ import "C"
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"runtime"
-	"sync"
 	"unsafe"
+
+	refutils "github.com/behrsin/go-refutils"
 )
 
 type Isolate struct {
-	referenceObject
-	pointer  C.IsolatePtr
-	contexts *referenceMap
-	tracer   tracer
+	refutils.RefHolder
+
+	pointer       C.IsolatePtr
+	contexts      *refutils.RefMap
+	mutex         refutils.RefMutex
+	running       bool
+	data          map[string]interface{}
+	shutdownHooks []interface{}
 }
 
 type Snapshot struct {
@@ -36,42 +42,45 @@ type HeapStatistics struct {
 	DoesZapGarbage          bool
 }
 
-var initOnce sync.Once
-var isolates = newReferenceMap("i", reflect.TypeOf(&Isolate{}))
+var isolates = refutils.NewWeakRefMap("i")
 
 func NewIsolate() *Isolate {
-	initOnce.Do(func() {
-		C.v8_Initialize()
-	})
+	Initialize()
 
 	isolate := &Isolate{
-		pointer:  C.v8_Isolate_New(C.StartupData{data: nil, length: 0}),
-		contexts: newReferenceMap("c", reflect.TypeOf(&Context{})),
-		tracer:   &nullTracer{},
+		pointer:       C.v8_Isolate_New(C.StartupData{data: nil, length: 0}),
+		contexts:      refutils.NewWeakRefMap("c"),
+		running:       true,
+		data:          map[string]interface{}{},
+		shutdownHooks: []interface{}{},
 	}
 	isolate.ref()
 	runtime.SetFinalizer(isolate, (*Isolate).release)
+
+	tracer.Add(isolate)
 
 	return isolate
 }
 
 func NewIsolateWithSnapshot(snapshot *Snapshot) *Isolate {
-	initOnce.Do(func() {
-		C.v8_Initialize()
-	})
+	Initialize()
 
 	isolate := &Isolate{
-		pointer:  C.v8_Isolate_New(snapshot.data),
-		contexts: newReferenceMap("c", reflect.TypeOf(&Context{})),
-		tracer:   &nullTracer{},
+		pointer:       C.v8_Isolate_New(snapshot.data),
+		contexts:      refutils.NewWeakRefMap("c"),
+		running:       true,
+		data:          map[string]interface{}{},
+		shutdownHooks: []interface{}{},
 	}
 	isolate.ref()
 	runtime.SetFinalizer(isolate, (*Isolate).release)
 
+	tracer.Add(isolate)
+
 	return isolate
 }
 
-func (i *Isolate) ref() id {
+func (i *Isolate) ref() refutils.ID {
 	return isolates.Ref(i)
 }
 
@@ -79,20 +88,106 @@ func (i *Isolate) unref() {
 	isolates.Unref(i)
 }
 
+func (i *Isolate) lock() error {
+	i.mutex.RefLock()
+	if !i.running {
+		defer i.mutex.RefUnlock()
+		return fmt.Errorf("isolate terminated")
+	}
+	return nil
+}
+
+func (i *Isolate) unlock() {
+	i.mutex.RefUnlock()
+}
+
+func (i *Isolate) IsRunning() bool {
+	i.mutex.RefLock()
+	defer i.mutex.RefUnlock()
+
+	return i.running
+}
+
+func (i *Isolate) AddShutdownHook(shutdownHook interface{}) {
+	i.shutdownHooks = append(i.shutdownHooks, shutdownHook)
+}
+
+func (i *Isolate) GetData(key string) interface{} {
+	return i.data[key]
+}
+
+func (i *Isolate) SetData(key string, value interface{}) {
+	i.data[key] = value
+}
+
 func (i *Isolate) RequestGarbageCollectionForTesting() {
+	if err := i.lock(); err != nil {
+		return
+	} else {
+		defer i.unlock()
+	}
+
 	C.v8_Isolate_RequestGarbageCollectionForTesting(i.pointer)
 }
 
 func (i *Isolate) Terminate() {
+	runtime.SetFinalizer(i, nil)
+	i.mutex.Lock()
+	if !i.running {
+		i.mutex.Unlock()
+		return
+	}
+
+	isolates.Release(i)
 	C.v8_Isolate_Terminate(i.pointer)
-	i.release()
+	i.running = false
+
+	contexts := i.contexts.Refs()
+	for _, c := range contexts {
+		context := c.(*Context)
+		if context.pointer != nil {
+			C.v8_Context_Release(context.pointer)
+			context.pointer = nil
+		}
+	}
+
+	C.v8_Isolate_Release(i.pointer)
+	i.pointer = nil
+	i.mutex.Unlock()
+
+	for _, context := range i.contexts.Refs() {
+		context.(*Context).release()
+	}
+
+	tracer.Remove(i)
+	isolates.Release(i)
+
+	vi := reflect.ValueOf(i)
+	for _, shutdownHook := range i.shutdownHooks {
+		reflect.ValueOf(shutdownHook).Call([]reflect.Value{vi})
+	}
+	i.shutdownHooks = nil
+
+	i.data = nil
 }
 
 func (i *Isolate) SendLowMemoryNotification() {
+	if err := i.lock(); err != nil {
+		return
+	} else {
+		defer i.unlock()
+	}
+
 	C.v8_Isolate_LowMemoryNotification(i.pointer)
 }
 
-func (i *Isolate) GetHeapStatistics() HeapStatistics {
+func (i *Isolate) GetHeapStatistics() (HeapStatistics, error) {
+	if err := i.lock(); err != nil {
+		return HeapStatistics{}, err
+	} else {
+		defer i.unlock()
+	}
+
 	hs := C.v8_Isolate_GetHeapStatistics(i.pointer)
 
 	return HeapStatistics{
@@ -105,7 +200,7 @@ func (i *Isolate) GetHeapStatistics() HeapStatistics {
 		MallocedMemory:          uint64(hs.mallocedMemory),
 		PeakMallocedMemory:      uint64(hs.peakMallocedMemory),
 		DoesZapGarbage:          hs.doesZapGarbage == 1,
-	}
+	}, nil
 }
 
 func (i *Isolate) newError(err C.Error) error {
@@ -118,10 +213,7 @@ func (i *Isolate) newError(err C.Error) error {
 }
 
 func (i *Isolate) release() {
-	C.v8_Isolate_Release(i.pointer)
-	i.pointer = nil
-	isolates.Release(i)
-	runtime.SetFinalizer(i, nil)
+	i.Terminate()
 }
 
 func newSnapshot(data C.StartupData) *Snapshot {
