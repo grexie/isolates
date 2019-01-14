@@ -18,7 +18,8 @@ case $GOOS in
   darwin) curl -sSL https://rubygems.org/downloads/libv8-6.3.292.48.1-universal-darwin-18.gem | tar -xf -;;
   linux) case $GOARCH in
     arm) curl -sSL http://tim-behrsin-portfolio.s3.amazonaws.com/libv8-6.3.292.48.1-arm-linux.gem | tar -xf -;;
-    *) curl -sSL https://rubygems.org/downloads/libv8-6.3.292.48.1-${GOARCH}-${GOOS}.gem | tar -xf -;;
+    amd64) curl -sSL https://rubygems.org/downloads/libv8-6.3.292.48.1-x86_64-linux.gem | tar -xf -;;
+    *) curl -sSL https://rubygems.org/downloads/libv8-6.3.292.48.1-${GOARCH}-linux.gem | tar -xf -;;
   esac;;
   *) curl -sSL https://rubygems.org/downloads/libv8-6.3.292.48.1-${GOARCH}-${GOOS}.gem | tar -xf -;;
 esac
