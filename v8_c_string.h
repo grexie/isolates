@@ -4,8 +4,8 @@
 
 #include <string>
 
-inline std::string v8_String_ToStdString(v8::Local<v8::Value> value) {
-  v8::String::Utf8Value s(value);
+inline std::string v8_String_ToStdString(v8::Isolate* isolate, v8::Local<v8::Value> value) {
+  v8::String::Utf8Value s(isolate, value);
 
   if (s.length() == 0) {
     return "";

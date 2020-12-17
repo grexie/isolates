@@ -11,13 +11,13 @@ inline v8::Local<v8::String> v8_StackTrace_FormatException(v8::Isolate* isolate,
   std::stringstream ss;
   ss << "Uncaught exception: ";
 
-  std::string exceptionStr = v8_String_ToStdString(try_catch.Exception());
+  std::string exceptionStr = v8_String_ToStdString(isolate, try_catch.Exception());
   ss << exceptionStr; // TODO(aroman) JSON-ify objects?
 
   if (!try_catch.Message().IsEmpty()) {
     if (!try_catch.Message()->GetScriptResourceName()->IsUndefined()) {
       ss << std::endl
-         << "at " << v8_String_ToStdString(try_catch.Message()->GetScriptResourceName());
+         << "at " << v8_String_ToStdString(isolate, try_catch.Message()->GetScriptResourceName());
 
       v8::Maybe<int> line_no = try_catch.Message()->GetLineNumber(ctx);
       v8::Maybe<int> start = try_catch.Message()->GetStartColumn(ctx);
@@ -32,7 +32,7 @@ inline v8::Local<v8::String> v8_StackTrace_FormatException(v8::Isolate* isolate,
       }
       if (!sourceLine.IsEmpty()) {
         ss << std::endl
-           << "  " << v8_String_ToStdString(sourceLine.ToLocalChecked());
+           << "  " << v8_String_ToStdString(isolate, sourceLine.ToLocalChecked());
       }
       if (start.IsJust() && end.IsJust()) {
         ss << std::endl
@@ -48,7 +48,7 @@ inline v8::Local<v8::String> v8_StackTrace_FormatException(v8::Isolate* isolate,
   }
 
   if (!try_catch.StackTrace().IsEmpty()) {
-    ss << std::endl << "Stack trace: " << v8_String_ToStdString(try_catch.StackTrace());
+    ss << std::endl << "Stack trace: " << v8_String_ToStdString(isolate, try_catch.StackTrace());
   }
 
   std::string string = ss.str();
@@ -64,8 +64,8 @@ inline CallerInfo v8_StackTrace_CallerInfo(v8::Isolate* isolate) {
 
   if (trace->GetFrameCount() >= 1) {
     v8::Local<v8::StackFrame> frame(trace->GetFrame(0));
-    src_file = v8_String_ToStdString(frame->GetScriptName());
-    src_func = v8_String_ToStdString(frame->GetFunctionName());
+    src_file = v8_String_ToStdString(isolate, frame->GetScriptName());
+    src_func = v8_String_ToStdString(isolate, frame->GetFunctionName());
     line_number = frame->GetLineNumber();
     column = frame->GetColumn();
   }

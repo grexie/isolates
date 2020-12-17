@@ -28,7 +28,7 @@ inline String v8_String_Create(const v8::String::Utf8Value& src);
 inline String v8_String_Create(const v8::Local<v8::Value>& val);
 inline String v8_String_Create(const char* msg);
 inline String v8_String_Create(const std::string& src);
-inline std::string v8_String_ToStdString(v8::Local<v8::Value> value);
+inline std::string v8_String_ToStdString(v8::Isolate* isolate, v8::Local<v8::Value> value);
 inline v8::Local<v8::String> v8_String_FromString(v8::Isolate* isolate, const String& string);
 
 typedef v8::Persistent<v8::FunctionTemplate> FunctionTemplate;
