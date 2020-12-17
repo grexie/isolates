@@ -35,8 +35,8 @@ inline String v8_String_Create(const v8::String::Utf8Value& src) {
   return (String){data, src.length()};
 }
 
-inline String v8_String_Create(const v8::Local<v8::Value>& val) {
-  return v8_String_Create(v8::String::Utf8Value(val));
+inline String v8_String_Create(v8::Isolate* isolate, const v8::Local<v8::Value>& val) {
+  return v8_String_Create(v8::String::Utf8Value(isolate, val));
 }
 
 inline String v8_String_Create(const char* msg) {

@@ -51,8 +51,9 @@ inline Kinds v8_Value_KindsFromLocal(v8::Local<v8::Value> value) {
   if (value->IsDataView())          kinds |= (1ULL << Kind::kDataView         );
   if (value->IsSharedArrayBuffer()) kinds |= (1ULL << Kind::kSharedArrayBuffer);
   if (value->IsProxy())             kinds |= (1ULL << Kind::kProxy            );
-  if (value->IsWebAssemblyCompiledModule())
-    kinds |= (1ULL << Kind::kWebAssemblyCompiledModule);
+  // TODO(pmuir): do we need this?
+  //if (value->IsWebAssemblyCompiledModule())
+  //  kinds |= (1ULL << Kind::kWebAssemblyCompiledModule);
 
   return kinds;
 }
