@@ -47,8 +47,8 @@ inline v8::Local<v8::String> v8_StackTrace_FormatException(v8::Isolate* isolate,
     }
   }
 
-  if (!try_catch.StackTrace().IsEmpty()) {
-    ss << std::endl << "Stack trace: " << v8_String_ToStdString(isolate, try_catch.StackTrace());
+  if (!try_catch.StackTrace(ctx).IsEmpty()) {
+    ss << std::endl << "Stack trace: " << v8_String_ToStdString(isolate, try_catch.StackTrace(ctx).ToLocalChecked());
   }
 
   std::string string = ss.str();
@@ -63,7 +63,7 @@ inline CallerInfo v8_StackTrace_CallerInfo(v8::Isolate* isolate) {
   v8::Local<v8::StackTrace> trace(v8::StackTrace::CurrentStackTrace(isolate, 1));
 
   if (trace->GetFrameCount() >= 1) {
-    v8::Local<v8::StackFrame> frame(trace->GetFrame(0));
+    v8::Local<v8::StackFrame> frame(trace->GetFrame(isolate, 0));
     src_file = v8_String_ToStdString(isolate, frame->GetScriptName());
     src_func = v8_String_ToStdString(isolate, frame->GetFunctionName());
     line_number = frame->GetLineNumber();
