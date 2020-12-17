@@ -24,7 +24,7 @@ typedef struct {
   v8::Isolate* isolate;
 } Context;
 
-inline String v8_String_Create(const v8::String::Utf8Value& src);
+inline String v8_String_Create(v8::Isolate* isolate, const v8::String::Utf8Value& src);
 inline String v8_String_Create(const v8::Local<v8::Value>& val);
 inline String v8_String_Create(const char* msg);
 inline String v8_String_Create(const std::string& src);
@@ -37,7 +37,7 @@ typedef v8::Persistent<v8::Value> Value;
 typedef v8::Persistent<v8::Private> Private;
 
 inline ValueTuple v8_Value_ValueTuple(v8::Isolate* isolate, v8::Local<v8::Value> value);
-inline ValueTuple v8_Value_ValueTuple_Error(const v8::Local<v8::Value>& value);
+inline ValueTuple v8_Value_ValueTuple_Error(v8::Isolate* isolate, const v8::Local<v8::Value>& value);
 
 inline v8::Local<v8::String> v8_StackTrace_FormatException(v8::Isolate* isolate, v8::Local<v8::Context> ctx, v8::TryCatch& try_catch);
 inline CallerInfo v8_StackTrace_CallerInfo(v8::Isolate* isolate);

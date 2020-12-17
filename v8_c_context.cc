@@ -30,13 +30,13 @@ extern "C" {
     );
 
     if (script.IsEmpty()) {
-      return v8_Value_ValueTuple_Error(v8_StackTrace_FormatException(isolate, context, tryCatch));
+      return v8_Value_ValueTuple_Error(isolate, v8_StackTrace_FormatException(isolate, context, tryCatch));
     }
 
     v8::Local<v8::Value> result = script->Run();
 
     if (result.IsEmpty()) {
-      return v8_Value_ValueTuple_Error(v8_StackTrace_FormatException(isolate, context, tryCatch));
+      return v8_Value_ValueTuple_Error(isolate, v8_StackTrace_FormatException(isolate, context, tryCatch));
     } else {
       return v8_Value_ValueTuple(isolate, result);
     }
