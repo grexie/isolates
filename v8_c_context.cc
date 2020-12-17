@@ -25,15 +25,20 @@ extern "C" {
     filename = filename ? filename : "(no file)";
 
     v8::Local<v8::Script> script = v8::Script::Compile(
-      v8::String::NewFromUtf8(isolate, code),
-      v8::String::NewFromUtf8(isolate, filename)
-    );
+      context,
+      v8::String::NewFromUtf8(isolate, code).ToLocalChecked()
+    ).ToLocalChecked();
+
+    // @todo need to include the file path as the 3rd arg in the Compile call
+    //v8::String::NewFromUtf8(isolate, filename)
 
     if (script.IsEmpty()) {
       return v8_Value_ValueTuple_Error(isolate, v8_StackTrace_FormatException(isolate, context, tryCatch));
     }
 
-    v8::Local<v8::Value> result = script->Run();
+    v8::Local<v8::Value> result = script->Run(context).ToLocalChecked();
+
+    // @todo These Local's need to be handled if there's a nil pointer
 
     if (result.IsEmpty()) {
       return v8_Value_ValueTuple_Error(isolate, v8_StackTrace_FormatException(isolate, context, tryCatch));
@@ -73,7 +78,7 @@ extern "C" {
       return new Value(isolate, v8::Boolean::New(isolate, value._bool == 1));
     }
     case tDATE: {
-      return new Value(isolate, v8::Date::New(isolate, value._float64));
+      return new Value(isolate, v8::Date::New(context, value._float64).ToLocalChecked());
     }
     case tFLOAT64: {
       return new Value(isolate, v8::Number::New(isolate, value._float64));
