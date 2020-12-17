@@ -10,9 +10,8 @@ extern "C" {
   void v8_Initialize() {
     const char* flags = "--expose_gc";
     v8::V8::SetFlagsFromString(flags, strlen(flags));
-
-    platform = v8::platform::CreateDefaultPlatform();
-    v8::V8::InitializePlatform(platform);
+    auto platform_ = v8::platform::NewDefaultPlatform();
+    v8::V8::InitializePlatform(platform_.get());
     v8::V8::Initialize();
     return;
   }
