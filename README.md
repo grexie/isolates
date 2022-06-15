@@ -6,7 +6,7 @@ To use import v8:
 
 ```go
 import (
-  v8 "github.com/behrsin/go-v8"
+  v8 "github.com/grexie/go-v8"
 )
 ```
 
