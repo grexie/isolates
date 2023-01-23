@@ -1,4 +1,4 @@
-package v8
+package isolates
 
 import (
 	"bufio"
@@ -116,14 +116,14 @@ func BenchmarkIsolateCreate(b *testing.B) {
 FINISHED:
 	close(finished)
 
-	for _, isolate := range isolates.Refs() {
+	for _, isolate := range isolateRefs.Refs() {
 		isolate.(*Isolate).Terminate()
 	}
 
 	runtime.GC()
 
-	if isolates.Length() != 0 {
-		b.Errorf("%d isolates remaining after garbage collection", isolates.Length())
+	if isolateRefs.Length() != 0 {
+		b.Errorf("%d isolates remaining after garbage collection", isolateRefs.Length())
 	}
 
 }

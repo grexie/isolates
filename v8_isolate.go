@@ -1,4 +1,4 @@
-package v8
+package isolates
 
 // #include "v8_c_bridge.h"
 // #cgo CXXFLAGS: -I${SRCDIR} -I${SRCDIR}/include -g3 -fno-rtti -fpic -std=c++11
@@ -12,7 +12,7 @@ import (
 	"runtime"
 	"unsafe"
 
-	refutils "github.com/behrsin/go-refutils"
+	refutils "github.com/grexie/refutils"
 )
 
 type Isolate struct {
@@ -42,7 +42,7 @@ type HeapStatistics struct {
 	DoesZapGarbage          bool
 }
 
-var isolates = refutils.NewWeakRefMap("i")
+var isolateRefs = refutils.NewWeakRefMap("i")
 
 func NewIsolate() *Isolate {
 	Initialize()
@@ -81,11 +81,11 @@ func NewIsolateWithSnapshot(snapshot *Snapshot) *Isolate {
 }
 
 func (i *Isolate) ref() refutils.ID {
-	return isolates.Ref(i)
+	return isolateRefs.Ref(i)
 }
 
 func (i *Isolate) unref() {
-	isolates.Unref(i)
+	isolateRefs.Unref(i)
 }
 
 func (i *Isolate) lock() error {
@@ -130,15 +130,61 @@ func (i *Isolate) RequestGarbageCollectionForTesting() {
 	C.v8_Isolate_RequestGarbageCollectionForTesting(i.pointer)
 }
 
+func (i *Isolate) Enter() {
+	if err := i.lock(); err != nil {
+		return
+	} else {
+		defer i.unlock()
+	}
+
+	C.v8_Isolate_Enter(i.pointer)
+}
+
+func (i *Isolate) Exit() {
+	if err := i.lock(); err != nil {
+		return
+	} else {
+		defer i.unlock()
+	}
+
+	C.v8_Isolate_Exit(i.pointer)
+}
+
+func (i *Isolate) RunMicrotasks() {
+	if err := i.lock(); err != nil {
+		return
+	} else {
+		defer i.unlock()
+	}
+
+	C.v8_Isolate_RunMicrotasks(i.pointer)
+}
+
+func (i *Isolate) EnqueueMicrotask(fn *Value) {
+	if err := i.lock(); err != nil {
+		return
+	} else {
+		defer i.unlock()
+	}
+
+	fn.context.ref()
+	defer fn.context.unref()
+
+	fn.Ref()
+	defer fn.Unref()
+
+	C.v8_Isolate_EnqueueMicrotask(i.pointer, fn.context.pointer, fn.pointer)
+}
+
 func (i *Isolate) Terminate() {
-	runtime.SetFinalizer(i, nil)
+	// runtime.SetFinalizer(i, nil)
 	i.mutex.Lock()
 	if !i.running {
 		i.mutex.Unlock()
 		return
 	}
 
-	isolates.Release(i)
+	isolateRefs.Release(i)
 	C.v8_Isolate_Terminate(i.pointer)
 	i.running = false
 
@@ -160,7 +206,7 @@ func (i *Isolate) Terminate() {
 	}
 
 	tracer.Remove(i)
-	isolates.Release(i)
+	isolateRefs.Release(i)
 
 	vi := reflect.ValueOf(i)
 	for _, shutdownHook := range i.shutdownHooks {

@@ -1,4 +1,4 @@
-#!/bin/bash -e
+#!/bin/bash -ex
 
 V8DIR="$(cd $(dirname ${BASH_SOURCE[0]}) && pwd)"
 
@@ -15,7 +15,11 @@ go env >libv8.env
 rm libv8.env
 
 case $GOOS in
-  darwin) curl -sSL https://rubygems.org/downloads/libv8-6.3.292.48.1-universal-darwin-18.gem | tar -xf -;;
+  darwin) case $GOARCH in
+    arm64) curl -sSL https://rubygems.org/downloads/libv8-6.3.292.48.1-universal-darwin-18.gem | tar -xf -;;
+    amd64) curl -sSL https://rubygems.org/downloads/libv8-6.3.292.48.1-x86_64-darwin-18.gem | tar -xf -;;
+    *) curl -sSL https://rubygems.org/downloads/libv8-6.3.292.48.1-${GOARCH}-darwin-18.gem | tar -xf -;;
+  esac;;
   linux) case $GOARCH in
     arm) curl -sSL http://tim-behrsin-portfolio.s3.amazonaws.com/libv8-6.3.292.48.1-arm-linux.gem | tar -xf -;;
     amd64) curl -sSL https://rubygems.org/downloads/libv8-6.3.292.48.1-x86_64-linux.gem | tar -xf -;;

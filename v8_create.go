@@ -1,4 +1,4 @@
-package v8
+package isolates
 
 // #include "v8_c_bridge.h"
 // #cgo CXXFLAGS: -I${SRCDIR} -I${SRCDIR}/include -g3 -fno-rtti -fpic -std=c++11
@@ -15,7 +15,7 @@ import (
 	"unicode"
 	"unsafe"
 
-	refutils "github.com/behrsin/go-refutils"
+	refutils "github.com/grexie/refutils"
 )
 
 type Marshaler interface {
@@ -78,6 +78,15 @@ func isZero(v reflect.Value) bool {
 }
 
 func (c *Context) Create(v interface{}) (*Value, error) {
+	// c.isolate.lock()
+	c.objectsMutex.Lock()
+	c.weakCallbackMutex.Lock()
+	c.constructorsMutex.Lock()
+	defer c.constructorsMutex.Unlock()
+	defer c.weakCallbackMutex.Unlock()
+	defer c.objectsMutex.Unlock()
+	// defer c.isolate.unlock()
+
 	rv := reflect.ValueOf(v)
 	value, err := c.create(rv)
 	return value, err

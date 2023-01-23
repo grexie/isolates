@@ -1,4 +1,4 @@
-package v8
+package isolates
 
 // #include "v8_c_bridge.h"
 // #cgo CXXFLAGS: -I${SRCDIR} -I${SRCDIR}/include -g3 -fno-rtti -fpic -std=c++11
@@ -11,7 +11,7 @@ import (
 	"sync"
 	"unsafe"
 
-	refutils "github.com/behrsin/go-refutils"
+	refutils "github.com/grexie/refutils"
 )
 
 type Context struct {
@@ -25,14 +25,16 @@ type Context struct {
 	vfalse    *Value
 	vtrue     *Value
 
-	functions *refutils.RefMap
-	accessors *refutils.RefMap
-	values    *refutils.RefMap
-	refs      *refutils.RefMap
-	objects   map[uintptr]*Value
+	functions    *refutils.RefMap
+	accessors    *refutils.RefMap
+	values       *refutils.RefMap
+	refs         *refutils.RefMap
+	objects      map[uintptr]*Value
+	objectsMutex sync.Mutex
 
-	baseConstructor *FunctionTemplate
-	constructors    map[reflect.Type]*FunctionTemplate
+	baseConstructor   *FunctionTemplate
+	constructors      map[reflect.Type]*FunctionTemplate
+	constructorsMutex sync.Mutex
 
 	weakCallbacks     map[string]*weakCallbackInfo
 	weakCallbackMutex sync.Mutex

@@ -1,4 +1,4 @@
-package v8
+package isolates
 
 // #include "v8_c_bridge.h"
 // #cgo CXXFLAGS: -I${SRCDIR} -I${SRCDIR}/include -g3 -fno-rtti -fpic -std=c++11
@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"runtime"
 
-	refutils "github.com/behrsin/go-refutils"
+	refutils "github.com/grexie/refutils"
 )
 
 type Resolver struct {
@@ -60,7 +60,8 @@ func (r *Resolver) Resolve(value interface{}) error {
 	if v, err := r.context.Create(value); err != nil {
 		return err
 	} else {
-		return r.ResolveWithValue(v)
+		err := C.v8_Resolver_Resolve(r.context.pointer, r.pointer, v.pointer)
+		return r.context.isolate.newError(err)
 	}
 }
 
@@ -85,7 +86,8 @@ func (r *Resolver) Reject(value interface{}) error {
 	if v, err := r.context.Create(value); err != nil {
 		return err
 	} else {
-		return r.RejectWithValue(v)
+		err := C.v8_Resolver_Reject(r.context.pointer, r.pointer, v.pointer)
+		return r.context.isolate.newError(err)
 	}
 }
 
@@ -105,7 +107,9 @@ func (r *Resolver) release() {
 	tracer.Remove(r)
 	runtime.SetFinalizer(r, nil)
 
-	if err := r.context.isolate.lock(); err == nil {
+	if err := r.context.isolate.lock(); err != nil {
+		return
+	} else {
 		defer r.context.isolate.unlock()
 	}
 

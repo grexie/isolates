@@ -1,4 +1,4 @@
-package v8
+package isolates
 
 // #include "v8_c_bridge.h"
 // #cgo CXXFLAGS: -I${SRCDIR} -I${SRCDIR}/include -g3 -fno-rtti -fpic -std=c++11
@@ -11,7 +11,7 @@ import (
 	"runtime"
 	"unsafe"
 
-	refutils "github.com/behrsin/go-refutils"
+	refutils "github.com/grexie/refutils"
 )
 
 type CallerInfo struct {

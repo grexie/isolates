@@ -1,4 +1,4 @@
-package v8
+package isolates
 
 // #include "v8_c_bridge.h"
 // #cgo CXXFLAGS: -I${SRCDIR} -I${SRCDIR}/include -g3 -fno-rtti -fpic -std=c++11
@@ -12,7 +12,7 @@ import (
 	"strings"
 	"unsafe"
 
-	refutils "github.com/behrsin/go-refutils"
+	refutils "github.com/grexie/refutils"
 )
 
 type callbackArgs struct {
@@ -102,7 +102,7 @@ func callbackHandler(info *C.CallbackInfo) (r C.ValueTuple) {
 	contextId, _ := strconv.Atoi(parts[1])
 	callbackId, _ := strconv.Atoi(parts[2])
 
-	isolateRef := isolates.Get(refutils.ID(isolateId))
+	isolateRef := isolateRefs.Get(refutils.ID(isolateId))
 	if isolateRef == nil {
 		panic(fmt.Errorf("missing isolate pointer during callback for isolate #%d", isolateId))
 	}

@@ -1,4 +1,4 @@
-package v8
+package isolates
 
 // #include "v8_c_bridge.h"
 // #cgo CXXFLAGS: -I${SRCDIR} -I${SRCDIR}/include -g3 -fno-rtti -fpic -std=c++11
@@ -12,7 +12,7 @@ import (
 	"time"
 	"unsafe"
 
-	refutils "github.com/behrsin/go-refutils"
+	refutils "github.com/grexie/refutils"
 )
 
 type Value struct {
@@ -59,11 +59,11 @@ func (c *Context) newValue(pointer C.ValuePtr, k C.Kinds) *Value {
 	return v
 }
 
-func (v *Value) ref() refutils.ID {
+func (v *Value) Ref() refutils.ID {
 	return v.context.refs.Ref(v)
 }
 
-func (v *Value) unref() {
+func (v *Value) Unref() {
 	v.context.refs.Unref(v)
 }
 
@@ -257,9 +257,38 @@ func (v *Value) Bytes() ([]byte, error) {
 	if b.data == nil {
 		return nil, nil
 	}
-	buf := make([]byte, b.length)
-	copy(buf, ((*[1 << (maxArraySize - 13)]byte)(unsafe.Pointer(b.data)))[:b.length:b.length])
+
+	buf := C.GoBytes(unsafe.Pointer(b.data), b.length)
+
 	return buf, nil
+}
+
+func (v *Value) SetBytes(bytes []byte) error {
+	if err := v.context.isolate.lock(); err != nil {
+		return err
+	} else {
+		defer v.context.isolate.unlock()
+	}
+
+	b := C.v8_Value_Bytes(v.context.pointer, v.pointer)
+	if b.data == nil {
+		return nil
+	}
+
+	copy(((*[1 << (maxArraySize - 13)]byte)(unsafe.Pointer(b.data)))[:len(bytes):len(bytes)], bytes)
+	return nil
+}
+
+func (v *Value) GetByteLength() (int, error) {
+	if err := v.context.isolate.lock(); err != nil {
+		return 0, err
+	} else {
+		defer v.context.isolate.unlock()
+	}
+
+	bytes := C.v8_Value_ByteLength(v.context.pointer, v.pointer)
+
+	return int(bytes), nil
 }
 
 func (v *Value) Int64() (int64, error) {

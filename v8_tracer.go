@@ -1,4 +1,4 @@
-package v8
+package isolates
 
 import (
 	"fmt"
@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	refutils "github.com/behrsin/go-refutils"
+	refutils "github.com/grexie/refutils"
 )
 
 type itracer interface {
@@ -112,6 +112,15 @@ func newSimpleTracer() *simpleTracer {
 
 func (t *simpleTracer) Start() {
 	go func() {
+		debug.SetPanicOnFault(true)
+		defer func() {
+			if p := recover(); p != nil {
+				err := fmt.Errorf("recover panic: sigseg")
+				log.Println(err)
+				return
+			}
+		}()
+
 		ch := t.channel
 		for m := range ch {
 			t.mutex.RLock()
@@ -295,7 +304,7 @@ func (t *simpleTracer) Dump(w io.Writer, allocations bool) {
 	stats["malloced memory"] = 0
 	stats["peak malloced memory"] = 0
 
-	for _, isolate := range isolates.Refs() {
+	for _, isolate := range isolateRefs.Refs() {
 		if hs, err := isolate.(*Isolate).GetHeapStatistics(); err != nil {
 			continue
 		} else {
