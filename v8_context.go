@@ -6,6 +6,7 @@ package isolates
 import "C"
 
 import (
+	"context"
 	"reflect"
 	"runtime"
 	"sync"
@@ -40,11 +41,11 @@ type Context struct {
 	weakCallbackMutex sync.Mutex
 }
 
-func (i *Isolate) NewContext() (*Context, error) {
-	if err := i.lock(); err != nil {
+func (i *Isolate) NewContext(ctx context.Context) (*Context, error) {
+	if locked, err := i.lock(ctx); err != nil {
 		return nil, err
-	} else {
-		defer i.unlock()
+	} else if locked {
+		defer i.unlock(ctx)
 	}
 
 	context := &Context{
@@ -80,31 +81,51 @@ func (c *Context) unref() {
 	c.isolate.contexts.Unref(c)
 }
 
-func (c *Context) Run(code string, filename string) (*Value, error) {
-	if err := c.isolate.lock(); err != nil {
-		return nil, err
-	} else {
-		defer c.isolate.unlock()
-	}
+func (c *Context) AddMicrotask(ctx context.Context, fn func(in FunctionArgs) error) error {
+	_, err := c.isolate.Sync(ctx, func(ctx context.Context) (*Value, error) {
+		wrapper := func(in FunctionArgs) (*Value, error) {
+			return nil, fn(in)
+		}
 
-	pcode := C.CString(code)
-	pfilename := C.CString(filename)
+		if value, err := c.Create(ctx, wrapper); err != nil {
+			return nil, err
+		} else if err := c.isolate.EnqueueMicrotaskWithValue(ctx, value); err != nil {
+			return nil, err
+		}
 
-	c.ref()
-	vt := C.v8_Context_Run(c.pointer, pcode, pfilename)
-	c.unref()
+		return nil, nil
+	})
 
-	C.free(unsafe.Pointer(pcode))
-	C.free(unsafe.Pointer(pfilename))
-
-	return c.newValueFromTuple(vt)
+	return err
 }
 
-func (c *Context) Undefined() (*Value, error) {
-	if err := c.isolate.lock(); err != nil {
+func (c *Context) Run(ctx context.Context, code string, filename string) (*Value, error) {
+	return c.isolate.Sync(ctx, func(ctx context.Context) (*Value, error) {
+		if locked, err := c.isolate.lock(ctx); err != nil {
+			return nil, err
+		} else if locked {
+			defer c.isolate.unlock(ctx)
+		}
+
+		pcode := C.CString(code)
+		pfilename := C.CString(filename)
+
+		c.ref()
+		vt := C.v8_Context_Run(c.pointer, pcode, pfilename)
+		c.unref()
+
+		C.free(unsafe.Pointer(pcode))
+		C.free(unsafe.Pointer(pfilename))
+
+		return c.newValueFromTuple(ctx, vt)
+	})
+}
+
+func (c *Context) Undefined(ctx context.Context) (*Value, error) {
+	if locked, err := c.isolate.lock(ctx); err != nil {
 		return nil, err
-	} else {
-		defer c.isolate.unlock()
+	} else if locked {
+		defer c.isolate.unlock(ctx)
 	}
 
 	if c.undefined == nil {
@@ -113,11 +134,11 @@ func (c *Context) Undefined() (*Value, error) {
 	return c.undefined, nil
 }
 
-func (c *Context) Null() (*Value, error) {
-	if err := c.isolate.lock(); err != nil {
+func (c *Context) Null(ctx context.Context) (*Value, error) {
+	if locked, err := c.isolate.lock(ctx); err != nil {
 		return nil, err
-	} else {
-		defer c.isolate.unlock()
+	} else if locked {
+		defer c.isolate.unlock(ctx)
 	}
 
 	if c.null == nil {
@@ -126,11 +147,11 @@ func (c *Context) Null() (*Value, error) {
 	return c.null, nil
 }
 
-func (c *Context) False() (*Value, error) {
-	if err := c.isolate.lock(); err != nil {
+func (c *Context) False(ctx context.Context) (*Value, error) {
+	if locked, err := c.isolate.lock(ctx); err != nil {
 		return nil, err
-	} else {
-		defer c.isolate.unlock()
+	} else if locked {
+		defer c.isolate.unlock(ctx)
 	}
 
 	if c.vfalse == nil {
@@ -139,11 +160,11 @@ func (c *Context) False() (*Value, error) {
 	return c.vfalse, nil
 }
 
-func (c *Context) True() (*Value, error) {
-	if err := c.isolate.lock(); err != nil {
+func (c *Context) True(ctx context.Context) (*Value, error) {
+	if locked, err := c.isolate.lock(ctx); err != nil {
 		return nil, err
-	} else {
-		defer c.isolate.unlock()
+	} else if locked {
+		defer c.isolate.unlock(ctx)
 	}
 
 	if c.vtrue == nil {
@@ -152,11 +173,11 @@ func (c *Context) True() (*Value, error) {
 	return c.vtrue, nil
 }
 
-func (c *Context) Global() (*Value, error) {
-	if err := c.isolate.lock(); err != nil {
+func (c *Context) Global(ctx context.Context) (*Value, error) {
+	if locked, err := c.isolate.lock(ctx); err != nil {
 		return nil, err
-	} else {
-		defer c.isolate.unlock()
+	} else if locked {
+		defer c.isolate.unlock(ctx)
 	}
 
 	if c.global == nil {
@@ -165,53 +186,57 @@ func (c *Context) Global() (*Value, error) {
 	return c.global, nil
 }
 
-func (c *Context) ParseJSON(json string) (*Value, error) {
-	if err := c.isolate.lock(); err != nil {
+func (c *Context) ParseJSON(ctx context.Context, json string) (*Value, error) {
+	if locked, err := c.isolate.lock(ctx); err != nil {
 		return nil, err
-	} else {
-		defer c.isolate.unlock()
+	} else if locked {
+		defer c.isolate.unlock(ctx)
 	}
 
 	pjson := C.CString(json)
 	defer C.free(unsafe.Pointer(pjson))
-	return c.newValueFromTuple(C.v8_JSON_Parse(c.pointer, pjson))
+	return c.newValueFromTuple(ctx, C.v8_JSON_Parse(c.pointer, pjson))
 }
 
 func (c *Context) release() {
-	runtime.SetFinalizer(c, nil)
+	ctx := WithContext(context.Background())
+	c.isolate.Sync(ctx, func(ctx context.Context) (*Value, error) {
+		runtime.SetFinalizer(c, nil)
 
-	c.global = nil
-	c.undefined = nil
-	c.null = nil
-	c.vfalse = nil
-	c.vtrue = nil
+		c.global = nil
+		c.undefined = nil
+		c.null = nil
+		c.vfalse = nil
+		c.vtrue = nil
 
-	c.functions.ReleaseAll()
-	c.accessors.ReleaseAll()
-	c.values.ReleaseAll()
-	c.refs.ReleaseAll()
-	c.objects = nil
+		c.functions.ReleaseAll()
+		c.accessors.ReleaseAll()
+		c.values.ReleaseAll()
+		c.refs.ReleaseAll()
+		c.objects = nil
 
-	c.baseConstructor = nil
-	c.constructors = nil
+		c.baseConstructor = nil
+		c.constructors = nil
 
-	c.weakCallbacks = nil
+		c.weakCallbacks = nil
 
-	tracer.RemoveRefMap("functionInfo", c.functions)
-	tracer.RemoveRefMap("accessorInfo", c.accessors)
-	tracer.RemoveRefMap("valueRef", c.values)
-	tracer.RemoveRefMap("refs", c.refs)
-	tracer.Remove(c)
+		tracer.RemoveRefMap("functionInfo", c.functions)
+		tracer.RemoveRefMap("accessorInfo", c.accessors)
+		tracer.RemoveRefMap("valueRef", c.values)
+		tracer.RemoveRefMap("refs", c.refs)
+		tracer.Remove(c)
 
-	if err := c.isolate.lock(); err == nil {
-		defer c.isolate.unlock()
-	}
+		if locked, _ := c.isolate.lock(ctx); locked {
+			defer c.isolate.unlock(ctx)
+		}
 
-	if c.pointer != nil {
-		C.v8_Context_Release(c.pointer)
-		c.pointer = nil
-	}
+		if c.pointer != nil {
+			C.v8_Context_Release(c.pointer)
+			c.pointer = nil
+		}
 
-	c.isolate.contexts.Release(c)
+		c.isolate.contexts.Release(c)
 
+		return nil, nil
+	})
 }

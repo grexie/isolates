@@ -6,11 +6,12 @@ package isolates
 import "C"
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 )
 
-func (v *Value) Unmarshal(t reflect.Type) (*reflect.Value, error) {
+func (v *Value) Unmarshal(ctx context.Context, t reflect.Type) (*reflect.Value, error) {
 	if t == valueType {
 		v := reflect.ValueOf(v)
 		return &v, nil
@@ -18,21 +19,21 @@ func (v *Value) Unmarshal(t reflect.Type) (*reflect.Value, error) {
 
 	switch t.Kind() {
 	case reflect.Bool:
-		if value, err := v.Bool(); err != nil {
+		if value, err := v.Bool(ctx); err != nil {
 			return nil, err
 		} else {
 			v := reflect.ValueOf(value).Convert(t)
 			return &v, nil
 		}
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		if value, err := v.Int64(); err != nil {
+		if value, err := v.Int64(ctx); err != nil {
 			return nil, err
 		} else {
 			v := reflect.ValueOf(value).Convert(t)
 			return &v, nil
 		}
 	case reflect.Float32, reflect.Float64:
-		if value, err := v.Float64(); err != nil {
+		if value, err := v.Float64(ctx); err != nil {
 			return nil, err
 		} else {
 			v := reflect.ValueOf(value).Convert(t)
@@ -43,8 +44,12 @@ func (v *Value) Unmarshal(t reflect.Type) (*reflect.Value, error) {
 	case reflect.Ptr, reflect.Interface:
 	case reflect.Map:
 	case reflect.String:
-		v := reflect.ValueOf(v.String()).Convert(t)
-		return &v, nil
+		if string, err := v.String(ctx); err != nil {
+			return nil, err
+		} else {
+			v := reflect.ValueOf(string).Convert(t)
+			return &v, nil
+		}
 	case reflect.Struct:
 	}
 

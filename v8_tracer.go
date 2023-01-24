@@ -1,6 +1,7 @@
 package isolates
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -24,7 +25,7 @@ type itracer interface {
 	Remove(value refutils.Ref)
 	AddRefMap(name string, referenceMap *refutils.RefMap)
 	RemoveRefMap(name string, referenceMap *refutils.RefMap)
-	Dump(w io.Writer, allocations bool)
+	Dump(ctx context.Context, w io.Writer, allocations bool)
 }
 
 type TracerType uint8
@@ -59,21 +60,21 @@ func StopTracer(t TracerType) {
 	tracer = &nullTracer{}
 }
 
-func DumpTracer(w io.Writer, allocations bool) {
-	tracer.Dump(w, allocations)
+func DumpTracer(ctx context.Context, w io.Writer, allocations bool) {
+	tracer.Dump(ctx, w, allocations)
 }
 
 type nullTracer struct{}
 
-func (t *nullTracer) Start()                                            {}
-func (t *nullTracer) Stop()                                             {}
-func (t *nullTracer) EnableAllocationStackTraces()                      {}
-func (t *nullTracer) DisableAllocationStackTraces()                     {}
-func (t *nullTracer) Add(value refutils.Ref)                            {}
-func (t *nullTracer) Remove(value refutils.Ref)                         {}
-func (t *nullTracer) AddRefMap(name string, refMap *refutils.RefMap)    {}
-func (t *nullTracer) RemoveRefMap(name string, refMap *refutils.RefMap) {}
-func (t *nullTracer) Dump(w io.Writer, allocations bool)                {}
+func (t *nullTracer) Start()                                                  {}
+func (t *nullTracer) Stop()                                                   {}
+func (t *nullTracer) EnableAllocationStackTraces()                            {}
+func (t *nullTracer) DisableAllocationStackTraces()                           {}
+func (t *nullTracer) Add(value refutils.Ref)                                  {}
+func (t *nullTracer) Remove(value refutils.Ref)                               {}
+func (t *nullTracer) AddRefMap(name string, refMap *refutils.RefMap)          {}
+func (t *nullTracer) RemoveRefMap(name string, refMap *refutils.RefMap)       {}
+func (t *nullTracer) Dump(ctx context.Context, w io.Writer, allocations bool) {}
 
 type simpleTracerAddMessage struct {
 	Ref        refutils.Ref
@@ -264,7 +265,7 @@ func sortedMapStringUint64(m map[string]uint64, f func(k string, v uint64)) {
 	}
 }
 
-func (t *simpleTracer) Dump(w io.Writer, allocations bool) {
+func (t *simpleTracer) Dump(ctx context.Context, w io.Writer, allocations bool) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -305,7 +306,7 @@ func (t *simpleTracer) Dump(w io.Writer, allocations bool) {
 	stats["peak malloced memory"] = 0
 
 	for _, isolate := range isolateRefs.Refs() {
-		if hs, err := isolate.(*Isolate).GetHeapStatistics(); err != nil {
+		if hs, err := isolate.(*Isolate).GetHeapStatistics(ctx); err != nil {
 			continue
 		} else {
 			stats["total heap size"] += hs.TotalHeapSize
@@ -352,6 +353,8 @@ func (t *simpleTracer) Dump(w io.Writer, allocations bool) {
 
 func TracerHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := WithContext(context.Background())
+
 		w.Write([]byte(`<!DOCTYPE html>
 <html>
 <head>
@@ -361,7 +364,7 @@ func TracerHandler() http.Handler {
 <body>
 <pre>
 `))
-		tracer.Dump(w, false)
+		tracer.Dump(ctx, w, false)
 		w.Write([]byte(`
 </pre>
 </body>

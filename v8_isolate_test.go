@@ -3,6 +3,7 @@ package isolates
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"os"
 	"runtime"
 	"testing"
@@ -16,20 +17,22 @@ func TestMain(m *testing.M) {
 }
 
 func DumpTracerForBenchmark(b *testing.B) {
+	ctx := WithContext(context.Background())
 	var buf bytes.Buffer
 	w := bufio.NewWriter(&buf)
-	DumpTracer(w, false)
+	DumpTracer(ctx, w, false)
 	w.Flush()
 	b.Logf("\n%s", string(buf.Bytes()))
 }
 
 func TestIsolateCreate(t *testing.T) {
+	ctx := WithContext(context.Background())
 	i := NewIsolate()
-	if c, err := i.NewContext(); err != nil {
+	if c, err := i.NewContext(ctx); err != nil {
 		t.Error(err)
-	} else if value, err := c.Create(20); err != nil {
+	} else if value, err := c.Create(ctx, 20); err != nil {
 		t.Error(err)
-	} else if fn, err := c.Run(`
+	} else if fn, err := c.Run(ctx, `
 		(() => {
 			const fib = (n) => {
 				if (n < 2) {
@@ -41,9 +44,9 @@ func TestIsolateCreate(t *testing.T) {
 		})()
 	`, "index.js"); err != nil {
 		t.Error(err)
-	} else if result, err := fn.Call(nil, value); err != nil {
+	} else if result, err := fn.Call(ctx, nil, value); err != nil {
 		t.Error(err)
-	} else if n, err := result.Int64(); err != nil {
+	} else if n, err := result.Int64(ctx); err != nil {
 		t.Error(err)
 	} else if n != 6765 {
 		t.Errorf("invalid result: %s", result)
@@ -60,6 +63,8 @@ func BenchmarkIsolateCreate(b *testing.B) {
 		i := NewIsolate()
 
 		go func(i *Isolate) {
+			ctx := WithContext(context.Background())
+
 			done := false
 
 			go func() {
@@ -70,11 +75,11 @@ func BenchmarkIsolateCreate(b *testing.B) {
 				}
 			}()
 
-			if c, err := i.NewContext(); err != nil {
+			if c, err := i.NewContext(ctx); err != nil {
 				b.Error(err)
-			} else if value, err := c.Create(20); err != nil {
+			} else if value, err := c.Create(ctx, 20); err != nil {
 				b.Error(err)
-			} else if fn, err := c.Run(`
+			} else if fn, err := c.Run(ctx, `
 				(() => {
 					const fib = (n) => {
 						if (n < 2) {
@@ -86,9 +91,9 @@ func BenchmarkIsolateCreate(b *testing.B) {
 				})()
 			`, "index.js"); err != nil {
 				b.Error(err)
-			} else if result, err := fn.Call(nil, value); err != nil {
+			} else if result, err := fn.Call(ctx, nil, value); err != nil {
 				b.Error(err)
-			} else if n, err := result.Int64(); err != nil {
+			} else if n, err := result.Int64(ctx); err != nil {
 				b.Error(err)
 			} else if n != 6765 {
 				b.Errorf("invalid result: %s", result)

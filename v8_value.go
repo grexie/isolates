@@ -6,6 +6,7 @@ package isolates
 import "C"
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"runtime"
@@ -31,14 +32,16 @@ type PropertyDescriptor struct {
 	Configurable bool
 }
 
-func (c *Context) newValueFromTuple(vt C.ValueTuple) (*Value, error) {
-	if err := c.isolate.lock(); err != nil {
-		return nil, err
-	} else {
-		defer c.isolate.unlock()
-	}
+func (c *Context) newValueFromTuple(ctx context.Context, vt C.ValueTuple) (*Value, error) {
+	return c.isolate.Sync(ctx, func(ctx context.Context) (*Value, error) {
+		if locked, err := c.isolate.lock(ctx); err != nil {
+			return nil, err
+		} else if locked {
+			defer c.isolate.unlock(ctx)
+		}
 
-	return c.newValue(vt.value, vt.kinds), c.isolate.newError(vt.error)
+		return c.newValue(vt.value, vt.kinds), c.isolate.newError(vt.error)
+	})
 }
 
 func (c *Context) newValue(pointer C.ValuePtr, k C.Kinds) *Value {
@@ -75,11 +78,11 @@ func (v *Value) GetContext() *Context {
 	return v.context
 }
 
-func (v *Value) DefineProperty(key string, descriptor *PropertyDescriptor) error {
-	if err := v.context.isolate.lock(); err != nil {
+func (v *Value) DefineProperty(ctx context.Context, key string, descriptor *PropertyDescriptor) error {
+	if locked, err := v.context.isolate.lock(ctx); err != nil {
 		return err
-	} else {
-		defer v.context.isolate.unlock()
+	} else if locked {
+		defer v.context.isolate.unlock(ctx)
 	}
 
 	pk := C.CString(key)
@@ -88,34 +91,34 @@ func (v *Value) DefineProperty(key string, descriptor *PropertyDescriptor) error
 	return v.context.isolate.newError(err)
 }
 
-func (v *Value) Get(key string) (*Value, error) {
-	if err := v.context.isolate.lock(); err != nil {
+func (v *Value) Get(ctx context.Context, key string) (*Value, error) {
+	if locked, err := v.context.isolate.lock(ctx); err != nil {
 		return nil, err
-	} else {
-		defer v.context.isolate.unlock()
+	} else if locked {
+		defer v.context.isolate.unlock(ctx)
 	}
 
 	pk := C.CString(key)
 	vt := C.v8_Value_Get(v.context.pointer, v.pointer, pk)
 	C.free(unsafe.Pointer(pk))
-	return v.context.newValueFromTuple(vt)
+	return v.context.newValueFromTuple(ctx, vt)
 }
 
-func (v *Value) GetIndex(i int) (*Value, error) {
-	if err := v.context.isolate.lock(); err != nil {
+func (v *Value) GetIndex(ctx context.Context, i int) (*Value, error) {
+	if locked, err := v.context.isolate.lock(ctx); err != nil {
 		return nil, err
-	} else {
-		defer v.context.isolate.unlock()
+	} else if locked {
+		defer v.context.isolate.unlock(ctx)
 	}
 
-	return v.context.newValueFromTuple(C.v8_Value_GetIndex(v.context.pointer, v.pointer, C.int(i)))
+	return v.context.newValueFromTuple(ctx, C.v8_Value_GetIndex(v.context.pointer, v.pointer, C.int(i)))
 }
 
-func (v *Value) Set(key string, value *Value) error {
-	if err := v.context.isolate.lock(); err != nil {
+func (v *Value) Set(ctx context.Context, key string, value *Value) error {
+	if locked, err := v.context.isolate.lock(ctx); err != nil {
 		return err
-	} else {
-		defer v.context.isolate.unlock()
+	} else if locked {
+		defer v.context.isolate.unlock(ctx)
 	}
 
 	pk := C.CString(key)
@@ -124,21 +127,21 @@ func (v *Value) Set(key string, value *Value) error {
 	return v.context.isolate.newError(err)
 }
 
-func (v *Value) SetIndex(i int, value *Value) error {
-	if err := v.context.isolate.lock(); err != nil {
+func (v *Value) SetIndex(ctx context.Context, i int, value *Value) error {
+	if locked, err := v.context.isolate.lock(ctx); err != nil {
 		return err
-	} else {
-		defer v.context.isolate.unlock()
+	} else if locked {
+		defer v.context.isolate.unlock(ctx)
 	}
 
 	return v.context.isolate.newError(C.v8_Value_SetIndex(v.context.pointer, v.pointer, C.int(i), value.pointer))
 }
 
-func (v *Value) SetInternalField(i int, value uint32) error {
-	if err := v.context.isolate.lock(); err != nil {
+func (v *Value) SetInternalField(ctx context.Context, i int, value uint32) error {
+	if locked, err := v.context.isolate.lock(ctx); err != nil {
 		return err
-	} else {
-		defer v.context.isolate.unlock()
+	} else if locked {
+		defer v.context.isolate.unlock(ctx)
 	}
 
 	v.context.ref()
@@ -148,11 +151,11 @@ func (v *Value) SetInternalField(i int, value uint32) error {
 	return nil
 }
 
-func (v *Value) GetInternalField(i int) (int64, error) {
-	if err := v.context.isolate.lock(); err != nil {
+func (v *Value) GetInternalField(ctx context.Context, i int) (int64, error) {
+	if locked, err := v.context.isolate.lock(ctx); err != nil {
 		return 0, err
-	} else {
-		defer v.context.isolate.unlock()
+	} else if locked {
+		defer v.context.isolate.unlock(ctx)
 	}
 
 	v.context.ref()
@@ -161,11 +164,11 @@ func (v *Value) GetInternalField(i int) (int64, error) {
 	return int64(C.v8_Object_GetInternalField(v.context.pointer, v.pointer, C.int(i))), nil
 }
 
-func (v *Value) GetInternalFieldCount() (int, error) {
-	if err := v.context.isolate.lock(); err != nil {
+func (v *Value) GetInternalFieldCount(ctx context.Context) (int, error) {
+	if locked, err := v.context.isolate.lock(ctx); err != nil {
 		return 0, err
-	} else {
-		defer v.context.isolate.unlock()
+	} else if locked {
+		defer v.context.isolate.unlock(ctx)
 	}
 
 	v.context.ref()
@@ -173,67 +176,72 @@ func (v *Value) GetInternalFieldCount() (int, error) {
 	return int(C.v8_Object_GetInternalFieldCount(v.context.pointer, v.pointer)), nil
 }
 
-func (v *Value) Bind(argv ...*Value) (*Value, error) {
-	if err := v.context.isolate.lock(); err != nil {
+func (v *Value) Bind(ctx context.Context, argv ...*Value) (*Value, error) {
+	if locked, err := v.context.isolate.lock(ctx); err != nil {
 		return nil, err
-	} else {
-		defer v.context.isolate.unlock()
+	} else if locked {
+		defer v.context.isolate.unlock(ctx)
 	}
 
-	if bind, err := v.Get("bind"); err != nil {
+	if bind, err := v.Get(ctx, "bind"); err != nil {
 		return nil, err
-	} else if fn, err := bind.Call(v, argv...); err != nil {
+	} else if fn, err := bind.Call(ctx, v, argv...); err != nil {
 		return nil, err
 	} else {
 		return fn, nil
 	}
 }
 
-func (v *Value) Call(self *Value, argv ...*Value) (*Value, error) {
-	if err := v.context.isolate.lock(); err != nil {
-		return nil, err
-	} else {
-		defer v.context.isolate.unlock()
-	}
+func (v *Value) Call(ctx context.Context, self *Value, argv ...*Value) (*Value, error) {
+	return v.context.isolate.Sync(ctx, func(ctx context.Context) (*Value, error) {
+		if locked, err := v.context.isolate.lock(ctx); err != nil {
+			return nil, err
+		} else if locked {
+			defer v.context.isolate.unlock(ctx)
+		}
 
-	pargv := make([]C.ValuePtr, len(argv)+1)
-	for i, argvi := range argv {
-		pargv[i] = argvi.pointer
-	}
+		pargv := make([]C.ValuePtr, len(argv)+1)
+		for i, argvi := range argv {
+			pargv[i] = argvi.pointer
+		}
 
-	pself := C.ValuePtr(nil)
-	if self != nil {
-		pself = self.pointer
-	}
+		pself := C.ValuePtr(nil)
+		if self != nil {
+			pself = self.pointer
+		}
 
-	v.context.ref()
-	defer v.context.unref()
+		v.context.ref()
+		defer v.context.unref()
 
-	vt := C.v8_Value_Call(v.context.pointer, v.pointer, pself, C.int(len(argv)), &pargv[0])
-	return v.context.newValueFromTuple(vt)
+		vt := C.v8_Value_Call(v.context.pointer, v.pointer, pself, C.int(len(argv)), &pargv[0])
+		return v.context.newValueFromTuple(ctx, vt)
+	})
 }
 
-func (v *Value) CallMethod(name string, argv ...*Value) (*Value, error) {
-	if err := v.context.isolate.lock(); err != nil {
-		return nil, err
-	} else {
-		defer v.context.isolate.unlock()
-	}
+func (v *Value) CallMethod(ctx context.Context, name string, argv ...*Value) (*Value, error) {
+	return v.context.isolate.Sync(ctx, func(ctx context.Context) (*Value, error) {
+		if locked, err := v.context.isolate.lock(ctx); err != nil {
+			return nil, err
+		} else if locked {
+			defer v.context.isolate.unlock(ctx)
+		}
 
-	if m, err := v.Get(name); err != nil {
-		return nil, err
-	} else if value, err := m.Call(v, argv...); err != nil {
-		return nil, err
-	} else {
-		return value, nil
-	}
+		if m, err := v.Get(ctx, name); err != nil {
+			return nil, err
+		} else if value, err := m.Call(ctx, v, argv...); err != nil {
+			return nil, err
+		} else {
+			return value, nil
+		}
+	})
+
 }
 
-func (v *Value) New(argv ...*Value) (*Value, error) {
-	if err := v.context.isolate.lock(); err != nil {
+func (v *Value) New(ctx context.Context, argv ...*Value) (*Value, error) {
+	if locked, err := v.context.isolate.lock(ctx); err != nil {
 		return nil, err
-	} else {
-		defer v.context.isolate.unlock()
+	} else if locked {
+		defer v.context.isolate.unlock(ctx)
 	}
 
 	pargv := make([]C.ValuePtr, len(argv)+1)
@@ -243,14 +251,15 @@ func (v *Value) New(argv ...*Value) (*Value, error) {
 	v.context.ref()
 	vt := C.v8_Value_New(v.context.pointer, v.pointer, C.int(len(argv)), &pargv[0])
 	v.context.unref()
-	return v.context.newValueFromTuple(vt)
+	return v.context.newValueFromTuple(ctx, vt)
 }
 
-func (v *Value) Bytes() ([]byte, error) {
-	if err := v.context.isolate.lock(); err != nil {
+func (v *Value) Bytes(ctx context.Context) ([]byte, error) {
+
+	if locked, err := v.context.isolate.lock(ctx); err != nil {
 		return nil, err
-	} else {
-		defer v.context.isolate.unlock()
+	} else if locked {
+		defer v.context.isolate.unlock(ctx)
 	}
 
 	b := C.v8_Value_Bytes(v.context.pointer, v.pointer)
@@ -263,11 +272,11 @@ func (v *Value) Bytes() ([]byte, error) {
 	return buf, nil
 }
 
-func (v *Value) SetBytes(bytes []byte) error {
-	if err := v.context.isolate.lock(); err != nil {
+func (v *Value) SetBytes(ctx context.Context, bytes []byte) error {
+	if locked, err := v.context.isolate.lock(ctx); err != nil {
 		return err
-	} else {
-		defer v.context.isolate.unlock()
+	} else if locked {
+		defer v.context.isolate.unlock(ctx)
 	}
 
 	b := C.v8_Value_Bytes(v.context.pointer, v.pointer)
@@ -279,11 +288,11 @@ func (v *Value) SetBytes(bytes []byte) error {
 	return nil
 }
 
-func (v *Value) GetByteLength() (int, error) {
-	if err := v.context.isolate.lock(); err != nil {
+func (v *Value) GetByteLength(ctx context.Context) (int, error) {
+	if locked, err := v.context.isolate.lock(ctx); err != nil {
 		return 0, err
-	} else {
-		defer v.context.isolate.unlock()
+	} else if locked {
+		defer v.context.isolate.unlock(ctx)
 	}
 
 	bytes := C.v8_Value_ByteLength(v.context.pointer, v.pointer)
@@ -291,46 +300,45 @@ func (v *Value) GetByteLength() (int, error) {
 	return int(bytes), nil
 }
 
-func (v *Value) Int64() (int64, error) {
-	if err := v.context.isolate.lock(); err != nil {
+func (v *Value) Int64(ctx context.Context) (int64, error) {
+	if locked, err := v.context.isolate.lock(ctx); err != nil {
 		return 0, err
-	} else {
-		defer v.context.isolate.unlock()
+	} else if locked {
+		defer v.context.isolate.unlock(ctx)
 	}
 
 	return int64(C.v8_Value_Int64(v.context.pointer, v.pointer)), nil
 }
 
-func (v *Value) Float64() (float64, error) {
-	if err := v.context.isolate.lock(); err != nil {
+func (v *Value) Float64(ctx context.Context) (float64, error) {
+	if locked, err := v.context.isolate.lock(ctx); err != nil {
 		return 0, err
-	} else {
-		defer v.context.isolate.unlock()
+	} else if locked {
+		defer v.context.isolate.unlock(ctx)
 	}
 
 	return float64(C.v8_Value_Float64(v.context.pointer, v.pointer)), nil
 }
 
-func (v *Value) Bool() (bool, error) {
-	if err := v.context.isolate.lock(); err != nil {
+func (v *Value) Bool(ctx context.Context) (bool, error) {
+	if locked, err := v.context.isolate.lock(ctx); err != nil {
 		return false, err
-	} else {
-		defer v.context.isolate.unlock()
+	} else if locked {
+		defer v.context.isolate.unlock(ctx)
 	}
-
 	return C.v8_Value_Bool(v.context.pointer, v.pointer) == 1, nil
 }
 
-func (v *Value) Date() (time.Time, error) {
-	if err := v.context.isolate.lock(); err != nil {
+func (v *Value) Date(ctx context.Context) (time.Time, error) {
+	if locked, err := v.context.isolate.lock(ctx); err != nil {
 		return time.Time{}, err
-	} else {
-		defer v.context.isolate.unlock()
+	} else if locked {
+		defer v.context.isolate.unlock(ctx)
 	}
 
 	if !v.IsKind(KindDate) {
 		return time.Time{}, errors.New("not a date")
-	} else if ms, err := v.Int64(); err != nil {
+	} else if ms, err := v.Int64(ctx); err != nil {
 		return time.Time{}, nil
 	} else {
 		s := ms / 1000
@@ -339,93 +347,95 @@ func (v *Value) Date() (time.Time, error) {
 	}
 }
 
-func (v *Value) PromiseInfo() (PromiseState, *Value, error) {
-	if err := v.context.isolate.lock(); err != nil {
+func (v *Value) PromiseInfo(ctx context.Context) (PromiseState, *Value, error) {
+	if locked, err := v.context.isolate.lock(ctx); err != nil {
 		return 0, nil, err
-	} else {
-		defer v.context.isolate.unlock()
+	} else if locked {
+		defer v.context.isolate.unlock(ctx)
 	}
 
 	if !v.IsKind(KindPromise) {
 		return 0, nil, errors.New("not a promise")
 	}
 	var state C.int
-	p, err := v.context.newValueFromTuple(C.v8_Value_PromiseInfo(v.context.pointer, v.pointer, &state))
+	p, err := v.context.newValueFromTuple(ctx, C.v8_Value_PromiseInfo(v.context.pointer, v.pointer, &state))
 	return PromiseState(state), p, err
 }
 
-func (v *Value) String() string {
-	if err := v.context.isolate.lock(); err != nil {
-		return err.Error()
-	} else {
-		defer v.context.isolate.unlock()
+func (v *Value) String(ctx context.Context) (string, error) {
+	if locked, err := v.context.isolate.lock(ctx); err != nil {
+		return "", err
+	} else if locked {
+		defer v.context.isolate.unlock(ctx)
 	}
 
 	ps := C.v8_Value_String(v.context.pointer, v.pointer)
 	defer C.free(unsafe.Pointer(ps.data))
 
 	s := C.GoStringN(ps.data, ps.length)
-	return s
+	return s, nil
 }
 
-func (v *Value) MarshalJSON() ([]byte, error) {
-	if err := v.context.isolate.lock(); err != nil {
+func (v *Value) MarshalJSON(ctx context.Context) ([]byte, error) {
+	if locked, err := v.context.isolate.lock(ctx); err != nil {
 		return nil, err
-	} else {
-		defer v.context.isolate.unlock()
+	} else if locked {
+		defer v.context.isolate.unlock(ctx)
 	}
 
-	if s, err := v.context.newValueFromTuple(C.v8_JSON_Stringify(v.context.pointer, v.pointer)); err != nil {
+	if s, err := v.context.newValueFromTuple(ctx, C.v8_JSON_Stringify(v.context.pointer, v.pointer)); err != nil {
+		return nil, err
+	} else if string, err := s.String(ctx); err != nil {
 		return nil, err
 	} else {
-		return []byte(s.String()), nil
+		return []byte(string), nil
 	}
 }
 
-func (v *Value) receiver() *valueRef {
-	if err := v.context.isolate.lock(); err != nil {
-		return nil
-	} else {
-		defer v.context.isolate.unlock()
+func (v *Value) receiver(ctx context.Context) (*valueRef, error) {
+	if locked, err := v.context.isolate.lock(ctx); err != nil {
+		return nil, err
+	} else if locked {
+		defer v.context.isolate.unlock(ctx)
 	}
 
-	if n, err := v.GetInternalFieldCount(); err != nil || n == 0 {
-		return nil
+	if n, err := v.GetInternalFieldCount(ctx); err != nil || n == 0 {
+		return nil, err
 	}
 
-	intfield, err := v.GetInternalField(0)
+	intfield, err := v.GetInternalField(ctx, 0)
 
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	idn := refutils.ID(intfield)
 	if idn == 0 {
-		return nil
+		return nil, err
 	}
 
 	ref := v.context.values.Get(idn)
 	if ref == nil {
-		return nil
+		return nil, err
 	}
 
 	if vref, ok := ref.(*valueRef); !ok {
-		return nil
+		return nil, err
 	} else {
-		return vref
+		return vref, nil
 	}
 }
 
-func (v *Value) Receiver(t reflect.Type) *reflect.Value {
+func (v *Value) Receiver(ctx context.Context, t reflect.Type) (*reflect.Value, error) {
 	var r reflect.Value
-	if vref := v.receiver(); vref == nil {
-		return nil
+	if vref, err := v.receiver(ctx); err != nil {
+		return nil, err
 	} else {
 		r = vref.value
 	}
 
 	if t.Kind() == reflect.Interface && r.Type().ConvertibleTo(t) {
 		r = r.Convert(t)
-		return &r
+		return &r, nil
 	}
 
 	ptr := t.Kind() == reflect.Ptr
@@ -439,7 +449,8 @@ func (v *Value) Receiver(t reflect.Type) *reflect.Value {
 	}
 
 	if rt != t {
-		return nil
+		// TODO: should this return an error?
+		return nil, nil
 	}
 
 	if ptr && r.Kind() != reflect.Ptr {
@@ -448,30 +459,30 @@ func (v *Value) Receiver(t reflect.Type) *reflect.Value {
 		r = r.Elem()
 	}
 
-	return &r
+	return &r, nil
 }
 
-func (v *Value) SetReceiver(value *reflect.Value) {
+func (v *Value) SetReceiver(ctx context.Context, value *reflect.Value) error {
 	if !v.IsKind(KindObject) {
-		return
+		return nil
 	}
 
-	if n, err := v.GetInternalFieldCount(); err != nil || n == 0 {
-		return
+	if n, err := v.GetInternalFieldCount(ctx); err != nil || n == 0 {
+		return nil
 	}
 
-	if vref := v.receiver(); vref != nil {
+	if vref, err := v.receiver(ctx); err != nil {
 		v.context.values.Release(vref)
 	}
 
 	if value == nil {
-		v.SetInternalField(0, 0)
-		return
+		v.SetInternalField(ctx, 0, 0)
+		return nil
 	}
 
 	id := v.context.values.Ref(&valueRef{value: *value})
 	// v.setID("r", id)
-	v.SetInternalField(0, uint32(id))
+	return v.SetInternalField(ctx, 0, uint32(id))
 }
 
 // func (v *Value) AddFinalizer(finalizer func()) {
@@ -530,39 +541,26 @@ func valueWeakCallbackHandler(pid C.String) {
 	// 	return nil
 }
 
+func (v *Value) releaseWithContext(ctx context.Context) {
+	v.context.isolate.Sync(ctx, func(ctx context.Context) (*Value, error) {
+		tracer.Remove(v)
+		runtime.SetFinalizer(v, nil)
+
+		if locked, _ := v.context.isolate.lock(ctx); locked {
+			defer v.context.isolate.unlock(ctx)
+		}
+
+		if v.context.pointer != nil {
+			C.v8_Value_Release(v.context.pointer, v.pointer)
+		}
+		v.context = nil
+		v.pointer = nil
+
+		return nil, nil
+	})
+}
+
 func (v *Value) release() {
-	// if false {
-	// 	iid := v.context.isolate.ref()
-	// 	defer v.context.isolate.unref()
-	//
-	// 	cid := v.context.ref()
-	// 	defer v.context.unref()
-	//
-	// 	vid := v.ref()
-	// 	defer v.unref()
-	//
-	// 	id := fmt.Sprintf("%d:%d:%d", iid, cid, vid)
-	//
-	// 	v.setWeak(id, func() {
-	// 		for _, finalizer := range v.finalizers {
-	// 			finalizer()
-	// 		}
-	// 		v.finalize()
-	// 	})
-	// } else {
-	// 	v.finalize()
-	// }
-	tracer.Remove(v)
-	runtime.SetFinalizer(v, nil)
-
-	if err := v.context.isolate.lock(); err == nil {
-		defer v.context.isolate.unlock()
-	}
-
-	if v.context.pointer != nil {
-		C.v8_Value_Release(v.context.pointer, v.pointer)
-	}
-	v.context = nil
-	v.pointer = nil
-
+	ctx := WithContext(context.Background())
+	v.releaseWithContext(ctx)
 }

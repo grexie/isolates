@@ -6,6 +6,7 @@ package isolates
 import "C"
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"runtime"
@@ -42,19 +43,20 @@ type Getter func(GetterArgs) (*Value, error)
 type Setter func(SetterArgs) error
 
 type FunctionArgs struct {
-	Context         *Context
-	Caller          CallerInfo
-	This            *Value
-	Holder          *Value
-	IsConstructCall bool
-	Args            []*Value
+	ExecutionContext context.Context
+	Context          *Context
+	Caller           CallerInfo
+	This             *Value
+	Holder           *Value
+	IsConstructCall  bool
+	Args             []*Value
 }
 
-func (c *FunctionArgs) Arg(n int) *Value {
+func (c *FunctionArgs) Arg(ctx context.Context, n int) *Value {
 	if n < len(c.Args) && n >= 0 {
 		return c.Args[n]
 	}
-	if undefined, err := c.Context.Undefined(); err != nil {
+	if undefined, err := c.Context.Undefined(ctx); err != nil {
 		// a panic should be ok here as it will be recovered in CallbackHandler
 		// unless FunctionArgs has been passed to a goroutine
 		panic(err)
@@ -64,20 +66,22 @@ func (c *FunctionArgs) Arg(n int) *Value {
 }
 
 type GetterArgs struct {
-	Context *Context
-	Caller  CallerInfo
-	This    *Value
-	Holder  *Value
-	Key     string
+	ExecutionContext context.Context
+	Context          *Context
+	Caller           CallerInfo
+	This             *Value
+	Holder           *Value
+	Key              string
 }
 
 type SetterArgs struct {
-	Context *Context
-	Caller  CallerInfo
-	This    *Value
-	Holder  *Value
-	Key     string
-	Value   *Value
+	ExecutionContext context.Context
+	Context          *Context
+	Caller           CallerInfo
+	This             *Value
+	Holder           *Value
+	Key              string
+	Value            *Value
 }
 
 type functionInfo struct {
@@ -98,11 +102,11 @@ type accessorInfo struct {
 	Setter
 }
 
-func (c *Context) NewFunctionTemplate(cb Function) (*FunctionTemplate, error) {
-	if err := c.isolate.lock(); err != nil {
+func (c *Context) NewFunctionTemplate(ctx context.Context, cb Function) (*FunctionTemplate, error) {
+	if locked, err := c.isolate.lock(ctx); err != nil {
 		return nil, err
-	} else {
-		defer c.isolate.unlock()
+	} else if locked {
+		defer c.isolate.unlock(ctx)
 	}
 
 	iid := c.isolate.ref()
@@ -111,11 +115,14 @@ func (c *Context) NewFunctionTemplate(cb Function) (*FunctionTemplate, error) {
 	cid := c.ref()
 	defer c.unref()
 
+	ecid := FromContext(ctx).ref()
+	defer FromContext(ctx).unref()
+
 	info := &functionInfo{
 		Function: cb,
 	}
 	id := c.functions.Ref(info)
-	pid := C.CString(fmt.Sprintf("%d:%d:%d", iid, cid, id))
+	pid := C.CString(fmt.Sprintf("%d:%d:%d:%d", iid, cid, id, ecid))
 	defer C.free(unsafe.Pointer(pid))
 
 	pf := C.v8_FunctionTemplate_New(c.pointer, pid)
@@ -130,11 +137,11 @@ func (c *Context) NewFunctionTemplate(cb Function) (*FunctionTemplate, error) {
 	return f, nil
 }
 
-func (f *FunctionTemplate) Inherit(parent *FunctionTemplate) error {
-	if err := f.context.isolate.lock(); err != nil {
+func (f *FunctionTemplate) Inherit(ctx context.Context, parent *FunctionTemplate) error {
+	if locked, err := f.context.isolate.lock(ctx); err != nil {
 		return err
-	} else {
-		defer f.context.isolate.unlock()
+	} else if locked {
+		defer f.context.isolate.unlock(ctx)
 	}
 
 	f.context.ref()
@@ -144,11 +151,11 @@ func (f *FunctionTemplate) Inherit(parent *FunctionTemplate) error {
 	return nil
 }
 
-func (f *FunctionTemplate) SetName(name string) error {
-	if err := f.context.isolate.lock(); err != nil {
+func (f *FunctionTemplate) SetName(ctx context.Context, name string) error {
+	if locked, err := f.context.isolate.lock(ctx); err != nil {
 		return err
-	} else {
-		defer f.context.isolate.unlock()
+	} else if locked {
+		defer f.context.isolate.unlock(ctx)
 	}
 
 	pname := C.CString(name)
@@ -161,11 +168,11 @@ func (f *FunctionTemplate) SetName(name string) error {
 	return nil
 }
 
-func (f *FunctionTemplate) SetHiddenPrototype(value bool) error {
-	if err := f.context.isolate.lock(); err != nil {
+func (f *FunctionTemplate) SetHiddenPrototype(ctx context.Context, value bool) error {
+	if locked, err := f.context.isolate.lock(ctx); err != nil {
 		return err
-	} else {
-		defer f.context.isolate.unlock()
+	} else if locked {
+		defer f.context.isolate.unlock(ctx)
 	}
 
 	f.context.ref()
@@ -175,11 +182,11 @@ func (f *FunctionTemplate) SetHiddenPrototype(value bool) error {
 	return nil
 }
 
-func (f *FunctionTemplate) GetFunction() (*Value, error) {
-	if err := f.context.isolate.lock(); err != nil {
+func (f *FunctionTemplate) GetFunction(ctx context.Context) (*Value, error) {
+	if locked, err := f.context.isolate.lock(ctx); err != nil {
 		return nil, err
-	} else {
-		defer f.context.isolate.unlock()
+	} else if locked {
+		defer f.context.isolate.unlock(ctx)
 	}
 
 	if f.value == nil {
@@ -197,11 +204,11 @@ func (f *FunctionTemplate) GetFunction() (*Value, error) {
 	return f.value, nil
 }
 
-func (f *FunctionTemplate) GetInstanceTemplate() (*ObjectTemplate, error) {
-	if err := f.context.isolate.lock(); err != nil {
+func (f *FunctionTemplate) GetInstanceTemplate(ctx context.Context) (*ObjectTemplate, error) {
+	if locked, err := f.context.isolate.lock(ctx); err != nil {
 		return nil, err
-	} else {
-		defer f.context.isolate.unlock()
+	} else if locked {
+		defer f.context.isolate.unlock(ctx)
 	}
 
 	f.context.ref()
@@ -217,11 +224,11 @@ func (f *FunctionTemplate) GetInstanceTemplate() (*ObjectTemplate, error) {
 	return ot, nil
 }
 
-func (f *FunctionTemplate) GetPrototypeTemplate() (*ObjectTemplate, error) {
-	if err := f.context.isolate.lock(); err != nil {
+func (f *FunctionTemplate) GetPrototypeTemplate(ctx context.Context) (*ObjectTemplate, error) {
+	if locked, err := f.context.isolate.lock(ctx); err != nil {
 		return nil, err
-	} else {
-		defer f.context.isolate.unlock()
+	} else if locked {
+		defer f.context.isolate.unlock(ctx)
 	}
 
 	f.context.ref()
@@ -238,29 +245,33 @@ func (f *FunctionTemplate) GetPrototypeTemplate() (*ObjectTemplate, error) {
 }
 
 func (f *FunctionTemplate) release() {
-	tracer.Remove(f)
-	runtime.SetFinalizer(f, nil)
-	f.info = nil
-	f.value = nil
+	ctx := WithContext(context.Background())
+	f.context.isolate.Sync(ctx, func(ctx context.Context) (*Value, error) {
+		tracer.Remove(f)
+		runtime.SetFinalizer(f, nil)
+		f.info = nil
+		f.value = nil
 
-	if err := f.context.isolate.lock(); err == nil {
-		defer f.context.isolate.unlock()
-	}
+		if locked, _ := f.context.isolate.lock(ctx); locked {
+			defer f.context.isolate.unlock(ctx)
+		}
 
-	if f.context.pointer != nil {
-		C.v8_FunctionTemplate_Release(f.context.pointer, f.pointer)
-	}
+		if f.context.pointer != nil {
+			C.v8_FunctionTemplate_Release(f.context.pointer, f.pointer)
+		}
 
-	f.context = nil
-	f.pointer = nil
+		f.context = nil
+		f.pointer = nil
+		return nil, nil
+	})
 
 }
 
-func (o *ObjectTemplate) SetInternalFieldCount(count int) error {
-	if err := o.context.isolate.lock(); err != nil {
+func (o *ObjectTemplate) SetInternalFieldCount(ctx context.Context, count int) error {
+	if locked, err := o.context.isolate.lock(ctx); err != nil {
 		return err
-	} else {
-		defer o.context.isolate.unlock()
+	} else if locked {
+		defer o.context.isolate.unlock(ctx)
 	}
 
 	o.context.ref()
@@ -270,11 +281,11 @@ func (o *ObjectTemplate) SetInternalFieldCount(count int) error {
 	return nil
 }
 
-func (o *ObjectTemplate) SetAccessor(name string, getter Getter, setter Setter) error {
-	if err := o.context.isolate.lock(); err != nil {
+func (o *ObjectTemplate) SetAccessor(ctx context.Context, name string, getter Getter, setter Setter) error {
+	if locked, err := o.context.isolate.lock(ctx); err != nil {
 		return err
-	} else {
-		defer o.context.isolate.unlock()
+	} else if locked {
+		defer o.context.isolate.unlock(ctx)
 	}
 
 	iid := o.context.isolate.ref()
@@ -283,11 +294,15 @@ func (o *ObjectTemplate) SetAccessor(name string, getter Getter, setter Setter) 
 	cid := o.context.ref()
 	defer o.context.unref()
 
+	ecid := FromContext(ctx).ref()
+	defer FromContext(ctx).unref()
+
 	id := o.context.accessors.Ref(&accessorInfo{
 		Getter: getter,
 		Setter: setter,
 	})
-	pid := C.CString(fmt.Sprintf("%d:%d:%d", iid, cid, id))
+
+	pid := C.CString(fmt.Sprintf("%d:%d:%d:%d", iid, cid, id, ecid))
 	defer C.free(unsafe.Pointer(pid))
 
 	pname := C.CString(name)
@@ -298,18 +313,21 @@ func (o *ObjectTemplate) SetAccessor(name string, getter Getter, setter Setter) 
 }
 
 func (o *ObjectTemplate) release() {
-	tracer.Remove(o)
-	runtime.SetFinalizer(o, nil)
+	ctx := WithContext(context.Background())
+	o.context.isolate.Sync(ctx, func(ctx context.Context) (*Value, error) {
+		tracer.Remove(o)
+		runtime.SetFinalizer(o, nil)
 
-	if err := o.context.isolate.lock(); err == nil {
-		defer o.context.isolate.unlock()
-	}
+		if locked, _ := o.context.isolate.lock(ctx); locked {
+			defer o.context.isolate.unlock(ctx)
+		}
 
-	if o.context.pointer != nil {
-		C.v8_ObjectTemplate_Release(o.context.pointer, o.pointer)
-	}
+		if o.context.pointer != nil {
+			C.v8_ObjectTemplate_Release(o.context.pointer, o.pointer)
+		}
 
-	o.context = nil
-	o.pointer = nil
-
+		o.context = nil
+		o.pointer = nil
+		return nil, nil
+	})
 }
