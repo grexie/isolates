@@ -5,12 +5,6 @@ auto allocator = v8::ArrayBuffer::Allocator::NewDefaultAllocator();
 
 extern "C"
 {
-  StartupData v8_CreateSnapshotDataBlob(const char *js)
-  {
-    v8::StartupData data = v8::V8::CreateSnapshotDataBlob(js);
-    return StartupData{data.data, data.raw_size};
-  }
-
   IsolatePtr v8_Isolate_New(StartupData startupData)
   {
     v8::Isolate::CreateParams createParams;
@@ -60,11 +54,11 @@ extern "C"
     return Error{NULL, 0};
   }
 
-  void v8_Isolate_RunMicrotasks(IsolatePtr pIsolate)
+  void v8_Isolate_PerformMicrotaskCheckpoint(IsolatePtr pIsolate)
   {
     ISOLATE_SCOPE(static_cast<v8::Isolate *>(pIsolate));
 
-    isolate->RunMicrotasks();
+    isolate->PerformMicrotaskCheckpoint();
   }
 
   void v8_Isolate_Terminate(IsolatePtr isolate_ptr)

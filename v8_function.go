@@ -1,8 +1,6 @@
 package isolates
 
 // #include "v8_c_bridge.h"
-// #cgo CXXFLAGS: -I${SRCDIR} -I${SRCDIR}/include -g3 -fno-rtti -fpic -std=c++11
-// #cgo LDFLAGS: -pthread -L${SRCDIR}/libv8 -lv8_base -lv8_init -lv8_initializers -lv8_libbase -lv8_libplatform -lv8_libsampler -lv8_nosnapshot
 import "C"
 
 import (
@@ -165,20 +163,6 @@ func (f *FunctionTemplate) SetName(ctx context.Context, name string) error {
 	defer f.context.unref()
 
 	C.v8_FunctionTemplate_SetName(f.context.pointer, f.pointer, pname)
-	return nil
-}
-
-func (f *FunctionTemplate) SetHiddenPrototype(ctx context.Context, value bool) error {
-	if locked, err := f.context.isolate.lock(ctx); err != nil {
-		return err
-	} else if locked {
-		defer f.context.isolate.unlock(ctx)
-	}
-
-	f.context.ref()
-	defer f.context.unref()
-
-	C.v8_FunctionTemplate_SetHiddenPrototype(f.context.pointer, f.pointer, C.bool(value))
 	return nil
 }
 

@@ -38,11 +38,11 @@ extern "C"
     v8::Local<v8::Value> maybeObject = static_cast<Value *>(pObject)->Get(isolate);
     if (!maybeObject->IsObject())
     {
-      return v8_Value_ValueTuple_Error(v8_String_FromString(isolate, "Not an object"));
+      return v8_Value_ValueTuple_Error(isolate, v8_String_FromString(isolate, "Not an object"));
     }
     v8::Local<v8::Object> object = maybeObject->ToObject(context).ToLocalChecked();
 
-    v8::Local<v8::Value> value = object->Get(context, v8::String::NewFromUtf8(isolate, field)).ToLocalChecked();
+    v8::Local<v8::Value> value = object->Get(context, v8::String::NewFromUtf8(isolate, field).ToLocalChecked()).ToLocalChecked();
     return v8_Value_ValueTuple(isolate, value);
   }
 
@@ -53,15 +53,15 @@ extern "C"
     v8::Local<v8::Value> maybeObject = static_cast<Value *>(pObject)->Get(isolate);
     if (!maybeObject->IsObject())
     {
-      return v8_Value_ValueTuple_Error(v8_String_FromString(isolate, "Not an object"));
+      return v8_Value_ValueTuple_Error(isolate, v8_String_FromString(isolate, "Not an object"));
     }
 
     if (maybeObject->IsArrayBuffer())
     {
       v8::Local<v8::ArrayBuffer> arrayBuffer = v8::Local<v8::ArrayBuffer>::Cast(maybeObject);
-      if (index < arrayBuffer->GetContents().ByteLength())
+      if (index < arrayBuffer->ByteLength())
       {
-        return v8_Value_ValueTuple(isolate, v8::Number::New(isolate, ((unsigned char *)arrayBuffer->GetContents().Data())[index]));
+        return v8_Value_ValueTuple(isolate, v8::Number::New(isolate, ((unsigned char *)arrayBuffer->GetBackingStore()->Data())[index]));
       }
       else
       {
@@ -110,7 +110,7 @@ extern "C"
     v8::Local<v8::Object> object = maybeObject->ToObject(context).ToLocalChecked();
 
     v8::Local<v8::Value> newValue = static_cast<Value *>(pNewValue)->Get(isolate);
-    v8::Maybe<bool> result = object->Set(context, v8::String::NewFromUtf8(isolate, field), newValue);
+    v8::Maybe<bool> result = object->Set(context, v8::String::NewFromUtf8(isolate, field).ToLocalChecked(), newValue);
 
     if (result.IsNothing())
     {
@@ -142,13 +142,13 @@ extern "C"
       {
         return v8_String_Create("Cannot assign non-number into array buffer");
       }
-      else if (index >= arrayBuffer->GetContents().ByteLength())
+      else if (index >= arrayBuffer->GetBackingStore()->ByteLength())
       {
         return v8_String_Create("Cannot assign to an index beyond the size of an array buffer");
       }
       else
       {
-        ((unsigned char *)arrayBuffer->GetContents().Data())[index] = newValue->ToNumber(context).ToLocalChecked()->Value();
+        ((unsigned char *)arrayBuffer->GetBackingStore()->Data())[index] = newValue->ToNumber(context).ToLocalChecked()->Value();
       }
     }
     else
@@ -216,7 +216,7 @@ extern "C"
     }
     v8::Local<v8::Object> object = maybeObject->ToObject(context).ToLocalChecked();
 
-    v8::Maybe<bool> result = object->DefineProperty(context, v8::String::NewFromUtf8(isolate, key), propertyDescriptor);
+    v8::Maybe<bool> result = object->DefineProperty(context, v8::String::NewFromUtf8(isolate, key).ToLocalChecked(), propertyDescriptor);
 
     if (result.IsNothing())
     {
@@ -237,7 +237,7 @@ extern "C"
     v8::Local<v8::Value> maybeObject = static_cast<Value *>(pValue)->Get(isolate);
     if (!maybeObject->IsObject())
     {
-      return v8_Value_ValueTuple_Error(v8_String_FromString(isolate, "Not an object"));
+      return v8_Value_ValueTuple_Error(isolate, v8_String_FromString(isolate, "Not an object"));
     }
     v8::Local<v8::Object> object = maybeObject->ToObject(context).ToLocalChecked();
     v8::Local<v8::Private> _private = static_cast<Private *>(pPrivate)->Get(isolate);
@@ -292,7 +292,7 @@ extern "C"
     v8::Local<v8::Value> value = static_cast<Value *>(pFunction)->Get(isolate);
     if (!value->IsFunction())
     {
-      return v8_Value_ValueTuple_Error(v8_String_FromString(isolate, "Not a function"));
+      return v8_Value_ValueTuple_Error(isolate, v8_String_FromString(isolate, "Not a function"));
     }
     v8::Local<v8::Function> function = v8::Local<v8::Function>::Cast(value);
 
@@ -318,7 +318,7 @@ extern "C"
 
     if (result.IsEmpty())
     {
-      return v8_Value_ValueTuple_Error(v8_StackTrace_FormatException(isolate, context, tryCatch));
+      return v8_Value_ValueTuple_Error(isolate, v8_StackTrace_FormatException(isolate, context, tryCatch));
     }
 
     return v8_Value_ValueTuple(isolate, result.ToLocalChecked());
@@ -334,7 +334,7 @@ extern "C"
     v8::Local<v8::Value> value = static_cast<Value *>(pFunction)->Get(isolate);
     if (!value->IsFunction())
     {
-      return v8_Value_ValueTuple_Error(v8_String_FromString(isolate, "Not a function"));
+      return v8_Value_ValueTuple_Error(isolate, v8_String_FromString(isolate, "Not a function"));
     }
     v8::Local<v8::Function> function = v8::Local<v8::Function>::Cast(value);
 
@@ -350,7 +350,7 @@ extern "C"
 
     if (result.IsEmpty())
     {
-      return v8_Value_ValueTuple_Error(v8_StackTrace_FormatException(isolate, context, tryCatch));
+      return v8_Value_ValueTuple_Error(isolate, v8_StackTrace_FormatException(isolate, context, tryCatch));
     }
 
     return v8_Value_ValueTuple(isolate, result.ToLocalChecked());
@@ -374,7 +374,7 @@ extern "C"
   {
     VALUE_SCOPE(pContext);
     v8::Local<v8::Value> value = static_cast<Value *>(pValue)->Get(isolate);
-    return v8_String_Create(value);
+    return v8_String_Create(isolate, value);
   }
 
   double v8_Value_Float64(ContextPtr pContext, ValuePtr pValue)
@@ -411,14 +411,7 @@ extern "C"
     VALUE_SCOPE(pContext);
 
     v8::Local<v8::Value> value = static_cast<Value *>(pValue)->Get(isolate);
-    v8::Maybe<bool> maybe = value->BooleanValue(context);
-
-    if (maybe.IsNothing())
-    {
-      return 0;
-    }
-
-    return maybe.ToChecked() ? 1 : 0;
+    return value->BooleanValue(isolate) ? 1 : 0;
   }
 
   ByteArray v8_Value_Bytes(ContextPtr pContext, ValuePtr pValue)
@@ -448,8 +441,8 @@ extern "C"
     }
 
     return ByteArray{
-        static_cast<const char *>(arrayBuffer->GetContents().Data()),
-        static_cast<int>(arrayBuffer->GetContents().ByteLength())};
+        static_cast<const char *>(arrayBuffer->GetBackingStore()->Data()),
+        static_cast<int>(arrayBuffer->GetBackingStore()->ByteLength())};
   }
 
   int v8_Value_ByteLength(ContextPtr pContext, ValuePtr pValue)
@@ -478,7 +471,7 @@ extern "C"
       return 0;
     }
 
-    return static_cast<int>(arrayBuffer->GetContents().ByteLength());
+    return static_cast<int>(arrayBuffer->GetBackingStore()->ByteLength());
   }
 
   ValueTuple v8_Value_PromiseInfo(ContextPtr pContext, ValuePtr pValue, int *promiseState)
@@ -488,7 +481,7 @@ extern "C"
     v8::Local<v8::Value> value = static_cast<Value *>(pValue)->Get(isolate);
     if (!value->IsPromise())
     {
-      return v8_Value_ValueTuple_Error(v8_String_FromString(isolate, "Not a promise"));
+      return v8_Value_ValueTuple_Error(isolate, v8_String_FromString(isolate, "Not a promise"));
     }
     v8::Local<v8::Promise> promise = v8::Local<v8::Promise>::Cast(value);
 
@@ -507,7 +500,7 @@ extern "C"
     ISOLATE_SCOPE(static_cast<v8::Isolate *>(pIsolate));
     v8::HandleScope handleScope(isolate);
 
-    v8::Local<v8::Private> _private = v8::Private::New(isolate, v8::String::NewFromUtf8(isolate, name));
+    v8::Local<v8::Private> _private = v8::Private::New(isolate, v8::String::NewFromUtf8(isolate, name).ToLocalChecked());
     return static_cast<PrivatePtr>(new Private(isolate, _private));
   }
 
@@ -520,7 +513,7 @@ extern "C"
 
     if (maybeValue.IsEmpty())
     {
-      return v8_Value_ValueTuple_Error(v8_String_FromString(isolate, "json parse gave an empty result"));
+      return v8_Value_ValueTuple_Error(isolate, v8_String_FromString(isolate, "json parse gave an empty result"));
     }
 
     return v8_Value_ValueTuple(isolate, maybeValue.ToLocalChecked());
@@ -535,7 +528,7 @@ extern "C"
 
     if (maybeJson.IsEmpty())
     {
-      return v8_Value_ValueTuple_Error(v8_String_FromString(isolate, "json stringify gave an empty result"));
+      return v8_Value_ValueTuple_Error(isolate, v8_String_FromString(isolate, "json stringify gave an empty result"));
     }
 
     return v8_Value_ValueTuple(isolate, maybeJson.ToLocalChecked());
