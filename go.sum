@@ -1,6 +1,2 @@
 github.com/grexie/refutils v0.1.1 h1:106Cml8XyqD9eiBNg9lNurvfe6IuvuydS1YJEc9cs4o=
 github.com/grexie/refutils v0.1.1/go.mod h1:jnl4Ft2YXrxwMKPiBrHYwMO6tAEtFzn6M0oHBEgBWRA=
-github.com/huandu/go-tls v1.0.1 h1:vdRzdlUFlqXWy0cfy5lVvHgUf6rt8QwEA/gCOCzsDX8=
-github.com/huandu/go-tls v1.0.1/go.mod h1:WeItecBdaIdUBRb7cSMMk+rq41iFKhf6Q9mDRDpbdec=
-golang.org/x/sys v0.0.0-20200107162124-548cf772de50 h1:YvQ10rzcqWXLlJZ3XCUoO25savxmscf4+SC+ZqiCHhA=
-golang.org/x/sys v0.0.0-20200107162124-548cf772de50/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
