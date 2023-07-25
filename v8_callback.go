@@ -1,6 +1,7 @@
 package isolates
 
-// #include "v8_c_bridge.h"
+//#include "v8_c_bridge.h"
+//#cgo CXXFLAGS: -I/usr/local/include/v8 -std=c++17
 import "C"
 
 import (
@@ -22,7 +23,7 @@ type callbackArgs struct {
 }
 
 func functionCallbackHandler(ctx context.Context, v8Context *Context, info C.CallbackInfo, args callbackArgs, functionId refutils.ID) (*Value, error) {
-	return v8Context.isolate.Sync(ctx, func(ctx context.Context) (*Value, error) {
+	pv, err := v8Context.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
 		functionRef := v8Context.functions.Get(functionId)
 		if functionRef == nil {
 			panic(fmt.Errorf("missing function pointer during callback for function #%d", functionId))
@@ -39,18 +40,25 @@ func functionCallbackHandler(ctx context.Context, v8Context *Context, info C.Cal
 		return function(FunctionArgs{
 			ctx,
 			v8Context,
-			args.Caller,
 			args.This,
-			args.Holder,
 			bool(info.isConstructCall),
 			argv,
+			args.Caller,
+			args.Holder,
 		})
 	})
+
+	if err != nil {
+		return nil, err
+	} else {
+		return pv.(*Value), err
+	}
 
 }
 
 func getterCallbackHandler(ctx context.Context, v8Context *Context, info C.CallbackInfo, args callbackArgs, accessorId refutils.ID) (*Value, error) {
-	return v8Context.isolate.Sync(ctx, func(ctx context.Context) (*Value, error) {
+	pv, err := v8Context.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
+
 		accessorRef := v8Context.accessors.Get(accessorId)
 		if accessorRef == nil {
 			panic(fmt.Errorf("missing function pointer during callback for getter #%d", accessorId))
@@ -66,10 +74,16 @@ func getterCallbackHandler(ctx context.Context, v8Context *Context, info C.Callb
 			C.GoStringN(info.key.data, info.key.length),
 		})
 	})
+
+	if err != nil {
+		return nil, err
+	} else {
+		return pv.(*Value), nil
+	}
 }
 
 func setterCallbackHandler(ctx context.Context, v8Context *Context, info C.CallbackInfo, args callbackArgs, accessorId refutils.ID) (*Value, error) {
-	return v8Context.isolate.Sync(ctx, func(ctx context.Context) (*Value, error) {
+	pv, err := v8Context.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
 		accessorRef := v8Context.accessors.Get(accessorId)
 		if accessorRef == nil {
 			panic(fmt.Errorf("missing function pointer during callback for setter #%d", accessorId))
@@ -88,6 +102,14 @@ func setterCallbackHandler(ctx context.Context, v8Context *Context, info C.Callb
 			v,
 		})
 	})
+
+	if err != nil {
+		return nil, err
+	} else if pv != nil {
+		return pv.(*Value), nil
+	} else {
+		return nil, nil
+	}
 }
 
 var callbackHandlers = map[C.CallbackType]func(context.Context, *Context, C.CallbackInfo, callbackArgs, refutils.ID) (*Value, error){
@@ -130,47 +152,46 @@ func callbackHandler(info *C.CallbackInfo) (r C.ValueTuple) {
 	}
 	ctx := executionContextRef.(*ExecutionContext)
 
-	defer func() {
-		if v := recover(); v != nil {
-			fmt.Printf("%+v\n", v)
-			debug.PrintStack()
-			err := fmt.Sprintf("%+v", v)
-			r.error = C.Error{data: C.CString(err), length: C.int(len(err))}
+	vt, _ := isolate.Sync(ctx.ctx, func(ctx context.Context) (interface{}, error) {
+		defer func() {
+			if v := recover(); v != nil {
+				fmt.Printf("%+v\n", v)
+				debug.PrintStack()
+				err := fmt.Sprintf("%+v", v)
+				r.error = C.Error{data: C.CString(err), length: C.int(len(err))}
+			}
+		}()
+
+		callerInfo := CallerInfo{
+			C.GoStringN(info.caller.funcname.data, info.caller.funcname.length),
+			C.GoStringN(info.caller.filename.data, info.caller.filename.length),
+			int(info.caller.line),
+			int(info.caller.column),
 		}
-	}()
 
-	callerInfo := CallerInfo{
-		C.GoStringN(info.caller.funcname.data, info.caller.funcname.length),
-		C.GoStringN(info.caller.filename.data, info.caller.filename.length),
-		int(info.caller.line),
-		int(info.caller.column),
-	}
+		self, _ := v8Context.newValueFromTuple(ctx, info.self)
+		holder, _ := v8Context.newValueFromTuple(ctx, info.holder)
 
-	self, _ := v8Context.newValueFromTuple(ctx.ctx, info.self)
-	holder, _ := v8Context.newValueFromTuple(ctx.ctx, info.holder)
+		args := callbackArgs{v8Context, callerInfo, self, holder}
+		For(ctx).SetContext(v8Context)
+		v, err := callbackHandlers[info._type](ctx, v8Context, *info, args, refutils.ID(callbackId))
 
-	args := callbackArgs{v8Context, callerInfo, self, holder}
-	v, err := callbackHandlers[info._type](ctx.ctx, v8Context, *info, args, refutils.ID(callbackId))
+		if err != nil {
+			m := err.Error()
+			cerr := C.Error{data: C.CString(m), length: C.int(len(m))}
+			return C.ValueTuple{value: nil, kinds: 0, error: cerr}, nil
+		}
 
-	if locked, err := isolate.lock(ctx.ctx); err != nil {
-		return C.ValueTuple{}
-	} else if locked {
-		defer isolate.unlock(ctx.ctx)
-	}
+		if v == nil {
+			return C.ValueTuple{}, nil
+		} else if v.context.isolate.pointer != v8Context.isolate.pointer {
+			m := fmt.Sprintf("callback returned a value from another isolate")
+			cerr := C.Error{data: C.CString(m), length: C.int(len(m))}
+			return C.ValueTuple{error: cerr}, nil
+		}
 
-	if err != nil {
-		m := err.Error()
-		cerr := C.Error{data: C.CString(m), length: C.int(len(m))}
-		return C.ValueTuple{value: nil, kinds: 0, error: cerr}
-	}
+		return C.ValueTuple{value: v.pointer, kinds: C.Kinds(v.kinds)}, nil
+	})
 
-	if v == nil {
-		return C.ValueTuple{}
-	} else if v.context.isolate.pointer != v8Context.isolate.pointer {
-		m := fmt.Sprintf("callback returned a value from another isolate")
-		cerr := C.Error{data: C.CString(m), length: C.int(len(m))}
-		return C.ValueTuple{error: cerr}
-	}
-
-	return C.ValueTuple{value: v.pointer, kinds: C.Kinds(v.kinds)}
+	return vt.(C.ValueTuple)
 }

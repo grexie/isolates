@@ -49,7 +49,7 @@ func TestIsolateCreate(t *testing.T) {
 	} else if n, err := result.Int64(ctx); err != nil {
 		t.Error(err)
 	} else if n != 6765 {
-		t.Errorf("invalid result: %s", result)
+		t.Errorf("invalid result: %v", result)
 		return
 	}
 	i.Terminate()
@@ -96,7 +96,7 @@ func BenchmarkIsolateCreate(b *testing.B) {
 			} else if n, err := result.Int64(ctx); err != nil {
 				b.Error(err)
 			} else if n != 6765 {
-				b.Errorf("invalid result: %s", result)
+				b.Errorf("invalid result: %v", result)
 				return
 			}
 

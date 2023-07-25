@@ -25,7 +25,7 @@ public:
   Inspector(v8::Isolate *isolate, int inspectorId) : isolate_(isolate), inspectorId_(inspectorId)
   {
     inspector_ = v8_inspector::V8Inspector::create(isolate, this);
-    session_ = inspector_->connect(1, this, v8_inspector::StringView());
+    session_ = inspector_->connect(1, this, v8_inspector::StringView(), v8_inspector::V8Inspector::ClientTrustLevel::kUntrusted);
   }
   void contextCreated(const v8_inspector::V8ContextInfo &contextInfo);
   void contextDestroyed(v8::Local<v8::Context> context);

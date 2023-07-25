@@ -164,7 +164,7 @@ extern "C"
   extern void v8_Isolate_Enter(IsolatePtr pIsolate);
   extern void v8_Isolate_Exit(IsolatePtr pIsolate);
   extern Error v8_Isolate_EnqueueMicrotask(IsolatePtr pIsolate, ContextPtr pContext, ValuePtr pFunction);
-  extern void v8_Isolate_RunMicrotasks(IsolatePtr pIsolate);
+  extern void v8_Isolate_PerformMicrotaskCheckpoint(IsolatePtr pIsolate);
 
   extern ContextPtr v8_Context_New(IsolatePtr isolate);
   extern ValueTuple v8_Context_Run(ContextPtr ctx, const char *code, const char *filename);
@@ -212,6 +212,7 @@ extern "C"
   extern Error v8_Value_Set(ContextPtr ctx, ValuePtr value,
                             const char *field, ValuePtr new_value);
   extern Error v8_Value_DefineProperty(ContextPtr ctxptr, ValuePtr valueptr, const char *key, ValuePtr getptr, ValuePtr setptr, bool enumerable, bool configurable);
+  extern Error v8_Value_DefinePropertyValue(ContextPtr ctxptr, ValuePtr valueptr, const char *key, ValuePtr valuedestptr, bool enumerable, bool configurable, bool writable);
   extern ValueTuple v8_Value_GetIndex(ContextPtr ctx, ValuePtr value, int idx);
   extern int64_t v8_Object_GetInternalField(ContextPtr pContext, ValuePtr pValue, int field);
   extern Error v8_Value_SetIndex(ContextPtr ctx, ValuePtr value, int idx, ValuePtr new_value);
@@ -230,6 +231,8 @@ extern "C"
   extern double v8_Value_Float64(ContextPtr ctx, ValuePtr value);
   extern int64_t v8_Value_Int64(ContextPtr ctx, ValuePtr value);
   extern int v8_Value_Bool(ContextPtr ctx, ValuePtr value);
+  extern bool v8_Value_Equals(ContextPtr ctx, ValuePtr left, ValuePtr right);
+  extern bool v8_Value_StrictEquals(ContextPtr ctx, ValuePtr left, ValuePtr right);
   extern ByteArray v8_Value_Bytes(ContextPtr ctx, ValuePtr value);
   extern int v8_Value_ByteLength(ContextPtr ctx, ValuePtr value);
 

@@ -1,5 +1,9 @@
 package isolates
 
+//#include "v8_c_bridge.h"
+//#cgo CXXFLAGS: -I/usr/local/include/v8 -std=c++17
+import "C"
+
 import (
 	"fmt"
 	"strings"

@@ -50,7 +50,8 @@ extern "C"
   {
     VALUE_SCOPE(pContext);
 
-    v8::Local<v8::Value> maybeObject = static_cast<Value *>(pObject)->Get(isolate);
+    v8::Local<v8::Value>
+        maybeObject = static_cast<Value *>(pObject)->Get(isolate);
     if (!maybeObject->IsObject())
     {
       return v8_Value_ValueTuple_Error(isolate, v8_String_FromString(isolate, "Not an object"));
@@ -205,6 +206,36 @@ extern "C"
     VALUE_SCOPE(pContext);
 
     v8::PropertyDescriptor propertyDescriptor(static_cast<Value *>(pGetHandler)->Get(isolate), static_cast<Value *>(pSetHandler)->Get(isolate));
+    propertyDescriptor.set_enumerable(enumerable);
+    propertyDescriptor.set_configurable(configurable);
+
+    Value *value = static_cast<Value *>(pValue);
+    v8::Local<v8::Value> maybeObject = value->Get(isolate);
+    if (!maybeObject->IsObject())
+    {
+      return v8_String_Create("Not an object");
+    }
+    v8::Local<v8::Object> object = maybeObject->ToObject(context).ToLocalChecked();
+
+    v8::Maybe<bool> result = object->DefineProperty(context, v8::String::NewFromUtf8(isolate, key).ToLocalChecked(), propertyDescriptor);
+
+    if (result.IsNothing())
+    {
+      return v8_String_Create("Something went wrong: define property returned nothing.");
+    }
+    else if (!result.FromJust())
+    {
+      return v8_String_Create("Something went wrong: define property failed.");
+    }
+
+    return Error{NULL, 0};
+  }
+
+  Error v8_Value_DefinePropertyValue(ContextPtr pContext, ValuePtr pValue, const char *key, ValuePtr pValueDest, bool enumerable, bool configurable, bool writable)
+  {
+    VALUE_SCOPE(pContext);
+
+    v8::PropertyDescriptor propertyDescriptor(static_cast<Value *>(pValueDest)->Get(isolate), writable);
     propertyDescriptor.set_enumerable(enumerable);
     propertyDescriptor.set_configurable(configurable);
 
@@ -406,6 +437,26 @@ extern "C"
     return maybe.ToChecked();
   }
 
+  bool v8_Value_Equals(ContextPtr pContext, ValuePtr pValueLeft, ValuePtr pValueRight)
+  {
+    VALUE_SCOPE(pContext);
+
+    v8::Local<v8::Value> valueLeft = static_cast<Value *>(pValueLeft)->Get(isolate);
+    v8::Local<v8::Value> valueRight = static_cast<Value *>(pValueRight)->Get(isolate);
+
+    return valueLeft->Equals(context, valueRight).ToChecked();
+  }
+
+  bool v8_Value_StrictEquals(ContextPtr pContext, ValuePtr pValueLeft, ValuePtr pValueRight)
+  {
+    VALUE_SCOPE(pContext);
+
+    v8::Local<v8::Value> valueLeft = static_cast<Value *>(pValueLeft)->Get(isolate);
+    v8::Local<v8::Value> valueRight = static_cast<Value *>(pValueRight)->Get(isolate);
+
+    return valueLeft->StrictEquals(valueRight);
+  }
+
   int v8_Value_Bool(ContextPtr pContext, ValuePtr pValue)
   {
     VALUE_SCOPE(pContext);
@@ -429,6 +480,15 @@ extern "C"
     else if (value->IsArrayBuffer())
     {
       arrayBuffer = v8::Local<v8::ArrayBuffer>::Cast(value);
+    }
+    else if (value->IsSharedArrayBuffer())
+    {
+      v8::Persistent<v8::SharedArrayBuffer> arrayBuffer;
+      arrayBuffer = v8::Local<v8::SharedArrayBuffer>::Cast(value);
+
+      return ByteArray{
+          static_cast<const char *>(arrayBuffer->GetBackingStore()->Data()),
+          static_cast<int>(arrayBuffer->GetBackingStore()->ByteLength())};
     }
     else
     {

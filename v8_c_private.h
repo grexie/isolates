@@ -3,8 +3,8 @@
 #define V8_C_PRIVATE_H
 
 #include "v8_c_bridge.h"
-#include <v8/libplatform/libplatform.h>
-#include <v8/v8.h>
+#include <libplatform/libplatform.h>
+#include <v8.h>
 
 #define ISOLATE_SCOPE(iso)      \
   v8::Isolate *isolate = iso;   \

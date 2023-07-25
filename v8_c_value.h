@@ -111,7 +111,9 @@ inline ValueTuple v8_Value_ValueTuple()
 
 inline ValueTuple v8_Value_ValueTuple(v8::Isolate *isolate, v8::Local<v8::Value> value)
 {
-  return ValueTuple{new Value(isolate, value), v8_Value_KindsFromLocal(value)};
+  ValuePtr v = new Value(isolate, value);
+
+  return ValueTuple{v, v8_Value_KindsFromLocal(value)};
 }
 
 inline ValueTuple v8_Value_ValueTuple_Error(v8::Isolate *isolate, const v8::Local<v8::Value> &value)

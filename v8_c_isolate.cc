@@ -5,11 +5,18 @@ auto allocator = v8::ArrayBuffer::Allocator::NewDefaultAllocator();
 
 extern "C"
 {
+  // StartupData v8_CreateSnapshotDataBlob(const char *js)
+  // {
+  //   v8::StartupData data = v8::V8::CreateSnapshotDataBlob(js);
+  //   return StartupData{data.data, data.raw_size};
+  // }
+
   IsolatePtr v8_Isolate_New(StartupData startupData)
   {
-    v8::Isolate::CreateParams createParams;
+    std::shared_ptr<v8::ArrayBuffer::Allocator> allocator(v8::ArrayBuffer::Allocator::NewDefaultAllocator());
 
-    createParams.array_buffer_allocator = allocator;
+    v8::Isolate::CreateParams createParams;
+    createParams.array_buffer_allocator_shared = allocator;
 
     if (startupData.length > 0 && startupData.data != NULL)
     {
@@ -19,7 +26,11 @@ extern "C"
       createParams.snapshot_blob = data;
     }
 
-    return static_cast<IsolatePtr>(v8::Isolate::New(createParams));
+    auto isolate = v8::Isolate::New(createParams);
+    // isolate->Enter();
+
+    return isolate;
+    // return NULL;
   }
 
   void v8_Isolate_Enter(IsolatePtr pIsolate)
