@@ -17,7 +17,7 @@ func TestMain(m *testing.M) {
 }
 
 func DumpTracerForBenchmark(b *testing.B) {
-	ctx := WithContext(context.Background())
+	ctx := v.context.isolate.GetExecutionContext().ctx
 	var buf bytes.Buffer
 	w := bufio.NewWriter(&buf)
 	DumpTracer(ctx, w, false)
@@ -26,7 +26,7 @@ func DumpTracerForBenchmark(b *testing.B) {
 }
 
 func TestIsolateCreate(t *testing.T) {
-	ctx := WithContext(context.Background())
+	ctx := v.context.isolate.GetExecutionContext().ctx
 	i := NewIsolate()
 	if c, err := i.NewContext(ctx); err != nil {
 		t.Error(err)

@@ -31,7 +31,6 @@ func (c *Context) NewResolver(ctx context.Context) (*Resolver, error) {
 			pointer: pr,
 		}
 		runtime.SetFinalizer(r, (*Resolver).release)
-		tracer.Add(r)
 		return r, nil
 	})
 
@@ -53,7 +52,7 @@ func (r *Resolver) ResolveWithValue(ctx context.Context, v *Value) error {
 
 func (r *Resolver) Resolve(ctx context.Context, value interface{}) error {
 	_, err := r.context.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
-		if v, err := r.context.create(ctx, reflect.ValueOf(value), nil); err != nil {
+		if v, err := r.context.create(ctx, reflect.ValueOf(value), nil, true); err != nil {
 			return nil, err
 		} else {
 			err := C.v8_Resolver_Resolve(r.context.pointer, r.pointer, v.pointer)
@@ -75,7 +74,7 @@ func (r *Resolver) RejectWithValue(ctx context.Context, v *Value) error {
 
 func (r *Resolver) Reject(ctx context.Context, value interface{}) error {
 	_, err := r.context.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
-		if v, err := r.context.create(ctx, reflect.ValueOf(value), nil); err != nil {
+		if v, err := r.context.create(ctx, reflect.ValueOf(value), nil, true); err != nil {
 			return nil, err
 		} else {
 			err := C.v8_Resolver_Reject(r.context.pointer, r.pointer, v.pointer)
@@ -89,8 +88,7 @@ func (r *Resolver) Reject(ctx context.Context, value interface{}) error {
 func (r *Resolver) Promise(ctx context.Context) (*Value, error) {
 	pv, err := r.context.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
 		pv := C.v8_Resolver_GetPromise(r.context.pointer, r.pointer)
-		v := r.context.newValue(pv, unionKindPromise)
-		return v, nil
+		return r.context.newValueFromTuple(ctx, pv)
 	})
 
 	if err != nil {
@@ -100,11 +98,32 @@ func (r *Resolver) Promise(ctx context.Context) (*Value, error) {
 	}
 }
 
+func (r *Resolver) ToCallback(ctx context.Context, callback *Value) error {
+	if callback.IsNil() || !callback.IsKind(KindFunction) {
+		return fmt.Errorf("callback undefined or null")
+	}
+
+	For(ctx).Background(func(ctx context.Context) {
+		if promise, err := r.Promise(ctx); err != nil {
+			callback.Call(ctx, nil, err)
+		} else {
+			if v, err := promise.Await(ctx); err != nil {
+				callback.Call(ctx, nil, err)
+			} else if v.IsNil() {
+				callback.Call(ctx, nil, nil)
+			} else {
+				callback.Call(ctx, nil, nil, v)
+			}
+		}
+	})
+
+	return nil
+}
+
 func (r *Resolver) release() {
-	ctx := WithContext(context.Background())
+	ctx := r.context.isolate.GetExecutionContext()
 
 	r.context.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
-		tracer.Remove(r)
 		runtime.SetFinalizer(r, nil)
 
 		if r.context.pointer != nil {

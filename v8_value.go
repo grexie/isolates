@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"reflect"
 	"runtime"
 	"time"
@@ -20,24 +19,82 @@ import (
 type Value struct {
 	refutils.RefHolder
 
-	context *Context
-	pointer C.ValuePtr
-	kinds   kinds
-	// finalizers []func()
+	context  *Context
+	pointer  C.ValuePtr
+	kinds    kinds
+	info     C.ValueTuplePtr
+	receiver reflect.Value
+
+	refCount int
+}
+
+type Error interface {
+	error
+	Message() string
 }
 
 type PropertyDescriptor struct {
-	Get          *Value
-	Set          *Value
-	Value        *Value
-	Enumerable   bool
-	Configurable bool
-	Writable     bool
+	Get          *Value `v8:"get"`
+	Set          *Value `v8:"set"`
+	Value        *Value `v8:"value"`
+	Enumerable   bool   `v8:"enumerable"`
+	Configurable bool   `v8:"configurable"`
+	Writable     bool   `v8:"writable"`
 }
 
-func (c *Context) newValueFromTuple(ctx context.Context, vt C.ValueTuple) (*Value, error) {
+func (d *PropertyDescriptor) MarshalV8(ctx context.Context) any {
+	out := map[string]any{}
+
+	if d.Value != nil || d.Writable {
+		out["value"] = d.Value
+		out["enumerable"] = d.Enumerable
+		out["configurable"] = d.Configurable
+		out["writable"] = d.Writable
+	} else {
+		out["get"] = d.Get
+		out["set"] = d.Set
+		out["enumerable"] = d.Enumerable
+		out["configurable"] = d.Configurable
+	}
+
+	return out
+}
+
+func (c *Context) newValuesFromTuples(ctx context.Context, r *C.CallResult, n C.int) ([]*Value, error) {
 	pv, err := c.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
-		return c.newValue(vt.value, vt.kinds), c.isolate.newError(vt.error)
+		out := make([]*Value, int(n))
+		pr := (*[1 << (maxArraySize - 18)]C.CallResult)(unsafe.Pointer(r))[:n:n]
+
+		for i := 0; i < len(out); i++ {
+			if v, err := c.newValueFromTuple(ctx, pr[i]); err != nil {
+				return nil, err
+			} else {
+				out[i] = v
+			}
+		}
+
+		return out, nil
+	})
+
+	if err != nil {
+		return nil, err
+	} else {
+		return pv.([]*Value), nil
+	}
+}
+
+func (c *Context) newValueFromTuple(ctx context.Context, r C.CallResult) (*Value, error) {
+	pv, err := c.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
+		if value, err := c.newValue(ctx, r.result), c.isolate.newError(r.error); err != nil {
+			C.v8_Value_ValueTuple_Release(c.pointer, r.result)
+			return nil, err
+		} else {
+			if r.isError {
+				return nil, value
+			} else {
+				return value, nil
+			}
+		}
 	})
 
 	if err != nil {
@@ -47,22 +104,65 @@ func (c *Context) newValueFromTuple(ctx context.Context, vt C.ValueTuple) (*Valu
 	}
 }
 
-func (c *Context) newValue(pointer C.ValuePtr, k C.Kinds) *Value {
-	if pointer == nil {
+func (c *Context) newValue(ctx context.Context, vt C.ValueTuplePtr) *Value {
+	pv, _ := c.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
+		if vt == nil {
+			return nil, nil
+		}
+
+		if vt.value == nil {
+			return nil, nil
+		}
+
+		var v *Value
+
+		if vt.internal != nil && vt.value != nil {
+			v = (*Value)(C.Pointer(vt.internal))
+			v.refCount++
+		} else {
+			v = &Value{
+				context: c,
+				pointer: vt.value,
+				kinds:   kinds(vt.kinds),
+				info:    vt,
+			}
+
+			ptr := C.Pointer(v)
+			v.info.internal = ptr
+			v.context.values++
+			v.refCount++
+
+			runtime.SetFinalizer(v, (*Value).release)
+		}
+
+		return v, nil
+	})
+
+	if pv == nil {
 		return nil
+	} else {
+		return pv.(*Value)
 	}
+}
 
-	v := &Value{
-		context: c,
-		pointer: pointer,
-		kinds:   kinds(k),
-		// finalizers: make([]func(), 0),
+func (v *Value) Error() string {
+	ctx := v.context.isolate.GetExecutionContext()
+
+	if rv := v.Receiver(ctx); !isZero(rv) && rv.Type().ConvertibleTo(errorType) {
+		return rv.Interface().(error).Error()
+	} else if v.IsKind(KindObject) {
+		if stack, err := v.Get(ctx, "stack"); err != nil || stack.IsNil() {
+			if err != nil {
+				return err.Error()
+			} else {
+				return v.String()
+			}
+		} else {
+			return fmt.Sprintf("%s", stack)
+		}
+	} else {
+		return v.String()
 	}
-	runtime.SetFinalizer(v, (*Value).release)
-
-	tracer.Add(v)
-
-	return v
 }
 
 func (v *Value) Ref() refutils.ID {
@@ -77,6 +177,10 @@ func (v *Value) IsKind(k Kind) bool {
 	return v.kinds.Is(k)
 }
 
+func (v *Value) IsNil() bool {
+	return v == nil || v.kinds.Is(KindUndefined) || v.kinds.Is(KindNull)
+}
+
 func (v *Value) GetContext() *Context {
 	return v.context
 }
@@ -85,7 +189,8 @@ func (v *Value) DefineProperty(ctx context.Context, key string, descriptor *Prop
 	_, err := v.context.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
 		pk := C.CString(key)
 		var err C.Error
-		if descriptor.Value != nil || descriptor.Get == nil && descriptor.Set == nil {
+
+		if !descriptor.Value.IsNil() && descriptor.Get.IsNil() && descriptor.Set.IsNil() {
 			err = C.v8_Value_DefinePropertyValue(v.context.pointer, v.pointer, pk, descriptor.Value.pointer, C.bool(descriptor.Configurable), C.bool(descriptor.Enumerable), C.bool(descriptor.Writable))
 		} else {
 			err = C.v8_Value_DefineProperty(v.context.pointer, v.pointer, pk, descriptor.Get.pointer, descriptor.Set.pointer, C.bool(descriptor.Configurable), C.bool(descriptor.Enumerable))
@@ -98,7 +203,7 @@ func (v *Value) DefineProperty(ctx context.Context, key string, descriptor *Prop
 }
 
 func (v *Value) Get(ctx context.Context, key string) (*Value, error) {
-	pv, err := v.context.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
+	pv, err := v.context.isolate.Sync(ctx, func(ctx context.Context) (any, error) {
 		pk := C.CString(key)
 		vt := C.v8_Value_Get(v.context.pointer, v.pointer, pk)
 		C.free(unsafe.Pointer(pk))
@@ -132,8 +237,20 @@ func (v *Value) GetIndex(ctx context.Context, i int) (*Value, error) {
 	}
 }
 
-func (v *Value) Set(ctx context.Context, key string, value *Value) error {
+func (v *Value) Set(ctx context.Context, key string, value any) error {
+	if pv, err := v.context.Create(ctx, value); err != nil {
+		return err
+	} else {
+		return v.SetValue(ctx, key, pv)
+	}
+}
+
+func (v *Value) SetValue(ctx context.Context, key string, value *Value) error {
 	_, err := v.context.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
+		if value == nil {
+			return nil, fmt.Errorf("value is nil")
+		}
+
 		pk := C.CString(key)
 		err := C.v8_Value_Set(v.context.pointer, v.pointer, pk, value.pointer)
 		C.free(unsafe.Pointer(pk))
@@ -213,17 +330,100 @@ func (v *Value) Bind(ctx context.Context, argv ...any) (*Value, error) {
 	}
 }
 
+func (v *Value) BindMethod(ctx context.Context, method string, argv ...any) (*Value, error) {
+	pv, err := v.context.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
+		if v, err := v.Get(ctx, method); err != nil {
+			return nil, err
+		} else if bind, err := v.Get(ctx, "bind"); err != nil {
+			return nil, err
+		} else if fn, err := bind.Call(ctx, v, argv...); err != nil {
+			return nil, err
+		} else {
+			return fn, nil
+		}
+	})
+
+	if err != nil {
+		return nil, err
+	} else {
+		return pv.(*Value), nil
+	}
+}
+
+func (v *Value) RebindAll(ctx context.Context) error {
+	if descriptors, err := v.GetOwnPropertyDescriptors(ctx); err != nil {
+		return err
+	} else if prototype, err := v.GetPrototype(ctx); err != nil {
+		return err
+	} else if descriptorsp, err := prototype.GetOwnPropertyDescriptors(ctx); err != nil {
+		return err
+	} else {
+		for k, descriptor := range descriptors {
+			descriptorsp[k] = descriptor
+		}
+
+		for method := range descriptorsp {
+			if m, err := v.Get(ctx, method); err != nil {
+				return err
+			} else if m.IsKind(KindFunction) {
+				if m, err := m.Bind(ctx, v); err != nil {
+					return err
+				} else if err := v.DefineProperty(ctx, method, &PropertyDescriptor{
+					Value:    m,
+					Writable: true,
+				}); err != nil {
+					return err
+				}
+			}
+		}
+
+		return nil
+	}
+}
+
+func (v *Value) RebindMethod(ctx context.Context, method string, args ...any) error {
+	args = append([]any{v}, args...)
+
+	if m, err := v.Get(ctx, method); err != nil {
+		return err
+	} else if !m.IsKind(KindFunction) {
+		return nil
+	} else if m, err := m.Bind(ctx, args...); err != nil {
+		return err
+	} else if wrapper, err := v.context.CreateWithName(ctx, method, func(in FunctionArgs) (*Value, error) {
+		args := append([]*Value{in.This}, in.Args...)
+		return m.CallValue(in.ExecutionContext, nil, args...)
+	}); err != nil {
+		return err
+	} else if err := v.DefineProperty(ctx, method, &PropertyDescriptor{
+		Value:    wrapper,
+		Writable: true,
+	}); err != nil {
+		return err
+	} else {
+		return nil
+	}
+}
+
 func (v *Value) Call(ctx context.Context, self any, args ...any) (*Value, error) {
 	var this *Value
 	var err error
 
-	if this, err = v.context.Create(ctx, self); err != nil {
+	if self == nil {
+		this = nil
+	} else if this, err = v.context.Create(ctx, self); err != nil {
 		return nil, err
 	}
 
 	argsv := make([]*Value, len(args))
 	for i, arg := range args {
-		if argv, err := v.context.Create(ctx, arg); err != nil {
+		if arg == nil {
+			if argv, err := v.context.Undefined(ctx); err != nil {
+				return nil, err
+			} else {
+				argsv[i] = argv
+			}
+		} else if argv, err := v.context.Create(ctx, arg); err != nil {
 			return nil, err
 		} else {
 			argsv[i] = argv
@@ -234,22 +434,41 @@ func (v *Value) Call(ctx context.Context, self any, args ...any) (*Value, error)
 }
 
 func (v *Value) CallValue(ctx context.Context, self *Value, argv ...*Value) (*Value, error) {
+	v.context.ref()
+	defer v.context.unref()
+
 	pv, err := v.context.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
+		if v.pointer == nil {
+			return nil, fmt.Errorf("CallValue on %s", v)
+		}
+
 		pargv := make([]C.ValuePtr, len(argv)+1)
 		for i, argvi := range argv {
+			if argvi.pointer == nil {
+				return nil, fmt.Errorf("passed arg(%d) is %s for call to %s", i, argvi, v)
+			}
 			pargv[i] = argvi.pointer
 		}
 
 		pself := C.ValuePtr(nil)
 		if self != nil {
+			if self.pointer == nil {
+				return nil, fmt.Errorf("passed self is %s for call to %s", self, v)
+			}
 			pself = self.pointer
 		}
 
-		v.context.ref()
-		defer v.context.unref()
+		if v.context.pointer == nil {
+			return nil, fmt.Errorf("context released for call to %s", v)
+		}
 
 		vt := C.v8_Value_Call(v.context.pointer, v.pointer, pself, C.int(len(argv)), &pargv[0])
-		return v.context.newValueFromTuple(ctx, vt)
+
+		if value, err := v.context.newValueFromTuple(ctx, vt); err != nil {
+			return nil, err
+		} else {
+			return value, nil
+		}
 	})
 
 	if err != nil {
@@ -264,6 +483,8 @@ func (v *Value) CallMethod(ctx context.Context, name string, argv ...any) (*Valu
 	pv, err := v.context.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
 		if m, err := v.Get(ctx, name); err != nil {
 			return nil, err
+		} else if m.IsNil() || !m.IsKind(KindFunction) {
+			return nil, fmt.Errorf("not a function: %s", m)
 		} else if value, err := m.Call(ctx, v, argv...); err != nil {
 			return nil, err
 		} else {
@@ -281,26 +502,111 @@ func (v *Value) CallMethod(ctx context.Context, name string, argv ...any) (*Valu
 func (v *Value) New(ctx context.Context, args ...any) (*Value, error) {
 	argsv := make([]*Value, len(args))
 	for i, arg := range args {
-		if argv, err := v.context.Create(ctx, arg); err != nil {
+		if arg == nil {
+			if argv, err := v.context.Undefined(ctx); err != nil {
+				return nil, err
+			} else {
+				argsv[i] = argv
+			}
+		} else if argv, err := v.context.Create(ctx, arg); err != nil {
 			return nil, err
 		} else {
 			argsv[i] = argv
 		}
 	}
+
 	return v.NewValue(ctx, argsv...)
 }
 
 func (v *Value) NewValue(ctx context.Context, argv ...*Value) (*Value, error) {
 	pv, err := v.context.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
 		pargv := make([]C.ValuePtr, len(argv)+1)
+
 		for i, argvi := range argv {
 			pargv[i] = argvi.pointer
 		}
+
 		v.context.ref()
 		vt := C.v8_Value_New(v.context.pointer, v.pointer, C.int(len(argv)), &pargv[0])
 		v.context.unref()
 
 		return v.context.newValueFromTuple(ctx, vt)
+	})
+
+	if err != nil {
+		return nil, err
+	} else {
+		return pv.(*Value), nil
+	}
+}
+
+func (v *Value) ToError(ctx context.Context) error {
+	if v.IsKind(KindUndefined) || v.IsKind(KindNull) {
+		return nil
+	} else if errv, err := v.Unmarshal(ctx, errorType); err != nil {
+		return err
+	} else {
+		return errv.Interface().(error)
+	}
+}
+
+func (v *Value) Keys(ctx context.Context) ([]string, error) {
+	sa, err := v.context.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
+		if keysv, err := v.context.keys.Call(ctx, nil, v); err != nil {
+			return nil, err
+		} else if keys, err := keysv.Unmarshal(ctx, reflect.TypeOf([]string{})); err != nil {
+			return nil, err
+		} else {
+			return keys.Interface().([]string), nil
+		}
+	})
+
+	if err != nil {
+		return nil, err
+	} else {
+		return sa.([]string), nil
+	}
+}
+
+func (v *Value) InstanceOf(ctx context.Context, object *Value) bool {
+	pb, err := v.context.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
+		cb := C.v8_Value_InstanceOf(v.context.pointer, v.pointer, object.pointer)
+		b := bool(cb)
+		return &b, nil
+	})
+
+	if err != nil {
+		return false
+	} else {
+		return *(pb.(*bool))
+	}
+}
+
+func (v *Value) GetOwnPropertyDescriptors(ctx context.Context) (map[string]PropertyDescriptor, error) {
+	pds, err := v.context.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
+		if descriptorsv, err := v.context.getOwnPropertyDescriptors.Call(ctx, nil, v); err != nil {
+			return nil, err
+		} else if descriptorsrv, err := descriptorsv.Unmarshal(ctx, reflect.TypeOf(map[string]PropertyDescriptor{})); err != nil {
+			return nil, err
+		} else {
+			return descriptorsrv.Interface().(map[string]PropertyDescriptor), nil
+		}
+	})
+
+	if err != nil {
+		return nil, err
+	} else {
+		return pds.(map[string]PropertyDescriptor), nil
+	}
+}
+
+func (v *Value) GetPrototype(ctx context.Context) (*Value, error) {
+	pv, err := v.context.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
+		if prototype, err := v.context.getPrototypeOf.Call(ctx, nil, v); err != nil {
+			return nil, err
+		} else {
+			return prototype, nil
+		}
 	})
 
 	if err != nil {
@@ -496,12 +802,12 @@ func (v *Value) Await(ctx context.Context) (*Value, error) {
 			resolved <- func() (*Value, error) {
 				errValue := in.Arg(in.ExecutionContext, 0)
 				if stackValue, err := errValue.Get(in.ExecutionContext, "stack"); err == nil {
-					if stack, err := stackValue.String(in.ExecutionContext); err != nil {
+					if stack, err := stackValue.StringValue(in.ExecutionContext); err != nil {
 						return nil, err
 					} else {
 						return nil, fmt.Errorf(stack)
 					}
-				} else if message, err := errValue.String(in.ExecutionContext); err != nil {
+				} else if message, err := errValue.StringValue(in.ExecutionContext); err != nil {
 					return nil, err
 				} else {
 					return nil, fmt.Errorf(message)
@@ -512,7 +818,11 @@ func (v *Value) Await(ctx context.Context) (*Value, error) {
 		}); err != nil {
 			return nil, err
 		} else {
-			go then.Call(ctx, v, resolve, reject)
+			v.context.isolate.Background(ctx, func(ctx context.Context) {
+				if _, err := then.Call(ctx, v, resolve, reject); err != nil {
+					For(ctx).Error(err)
+				}
+			})
 			return (<-resolved)()
 		}
 	})
@@ -524,8 +834,31 @@ func (v *Value) Await(ctx context.Context) (*Value, error) {
 	}
 }
 
-func (v *Value) String(ctx context.Context) (string, error) {
+func (v *Value) String() string {
+	if v.pointer == nil {
+		return "[released Value]"
+	}
+
+	if v.context == nil || v.context.pointer == nil {
+		return "[Value in released Context]"
+	}
+
+	ps := C.v8_Value_String(v.context.pointer, v.pointer)
+	defer C.free(unsafe.Pointer(ps.data))
+
+	s := C.GoStringN(ps.data, ps.length)
+	return s
+}
+
+func (v *Value) StringValue(ctx context.Context) (string, error) {
 	s, err := v.context.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
+		if v.pointer == nil {
+			return "[released Value]", nil
+		}
+
+		if v.context == nil || v.context.pointer == nil {
+			return "[Value in released Context]", nil
+		}
 
 		ps := C.v8_Value_String(v.context.pointer, v.pointer)
 		defer C.free(unsafe.Pointer(ps.data))
@@ -539,14 +872,13 @@ func (v *Value) String(ctx context.Context) (string, error) {
 	} else {
 		return s.(string), nil
 	}
-
 }
 
 func (v *Value) MarshalJSON(ctx context.Context) ([]byte, error) {
 	b, err := v.context.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
 		if s, err := v.context.newValueFromTuple(ctx, C.v8_JSON_Stringify(v.context.pointer, v.pointer)); err != nil {
 			return nil, err
-		} else if string, err := s.String(ctx); err != nil {
+		} else if string, err := s.StringValue(ctx); err != nil {
 			return nil, err
 		} else {
 			return []byte(string), nil
@@ -557,34 +889,6 @@ func (v *Value) MarshalJSON(ctx context.Context) ([]byte, error) {
 		return nil, err
 	} else {
 		return b.([]byte), nil
-	}
-}
-
-func (v *Value) receiver(ctx context.Context) (*valueRef, error) {
-	var intfield uint64
-
-	if vref, err := v.context.receiverTable.CallMethod(ctx, "get", v); err != nil {
-		return nil, err
-	} else if vintfield, err := vref.Int64(ctx); err != nil {
-		return nil, err
-	} else {
-		intfield = uint64(vintfield)
-	}
-
-	idn := refutils.ID(intfield)
-	if idn == 0 {
-		return nil, nil
-	}
-
-	ref := v.context.values.Get(idn)
-	if ref == nil {
-		return nil, nil
-	}
-
-	if vref, ok := ref.(*valueRef); !ok {
-		return nil, nil
-	} else {
-		return vref, nil
 	}
 }
 
@@ -602,97 +906,29 @@ func (v *Value) Constructor(t reflect.Type) *FunctionTemplate {
 	}
 }
 
-func (v *Value) Receiver(ctx context.Context, t reflect.Type) (*reflect.Value, error) {
-	var r reflect.Value
-	if vref, err := v.receiver(ctx); err != nil || vref == nil {
-		// attempt to create a receiver
-		if constructorTemplate := v.Constructor(t); constructorTemplate == nil {
-			return nil, nil
-		} else if constructor, err := constructorTemplate.GetFunction(ctx); err != nil {
-			return nil, err
-		} else if _, err := constructor.Call(ctx, v); err != nil {
-			return nil, err
-		} else if vref, err := v.receiver(ctx); err != nil {
-			return nil, err
-		} else if vref == nil {
-			return nil, fmt.Errorf("no receiver found for %s and no constructor produces a receiver for %s (%p)", t, t.Elem(), v)
-		} else {
-			r = vref.value
-		}
-	} else {
-		r = vref.value
-	}
-
-	if (t.Kind() == reflect.Interface || t.Kind() == reflect.Pointer) && r.Type().ConvertibleTo(t) {
-		r = r.Convert(t)
-		return &r, nil
-	}
-
-	ptr := t.Kind() == reflect.Ptr
-
-	rt := r.Type()
-	if rt.Kind() == reflect.Ptr {
-		rt = rt.Elem()
-	}
-	if t.Kind() == reflect.Ptr {
-		t = t.Elem()
-	}
-
-	// if rt != t {
-	// 	// TODO: should this return an error?
-	// 	return nil, nil
-	// }
-
-	if ptr && r.Kind() != reflect.Ptr {
-		r = r.Addr()
-	} else if !ptr && r.Kind() == reflect.Ptr {
-		r = r.Elem()
-	}
-
-	return &r, nil
+func (v *Value) Receiver(ctx context.Context) reflect.Value {
+	return v.receiver
 }
 
-func (v *Value) SetReceiver(ctx context.Context, value *reflect.Value) error {
-
-	// if n, err := v.GetInternalFieldCount(ctx); err != nil || n == 0 {
-	// 	return fmt.Errorf("error getting internal field")
-	// }
-
-	if vref, err := v.receiver(ctx); err == nil && vref != nil {
-		v.context.values.Release(vref)
+func (v *Value) SetReceiver(ctx context.Context, value reflect.Value) {
+	if !v.IsKind(KindObject) {
+		panic("trying to set receiver on non-object")
 	}
 
-	if value == nil {
-		if _, err := v.context.receiverTable.CallMethod(ctx, "delete", v); err != nil {
-			return err
-		} else {
-			return nil
-		}
+	v.context.receiversMutex.Lock()
+	defer v.context.receiversMutex.Unlock()
+
+	if !isZero(v.receiver) {
+		delete(v.context.receivers, v.receiver.Pointer())
 	}
 
-	if value.Kind() != reflect.Pointer && value.Kind() != reflect.Interface {
-		v := value.Addr()
-		value = &v
+	v.receiver = value
+
+	if value.Kind() != reflect.Pointer && value.Kind() != reflect.Array && value.Kind() != reflect.Map && value.Kind() != reflect.Chan && value.Kind() != reflect.Func {
+		value = value.Addr()
 	}
 
-	id := v.context.values.Ref(&valueRef{value: *value})
-
-	if vref, err := v.context.Create(ctx, uint64(id)); err != nil {
-		log.Println(err)
-		return err
-	} else if _, err := v.context.receiverTable.CallMethod(ctx, "set", v, vref); err != nil {
-		log.Println(err)
-		return err
-	} else {
-		if value.CanAddr() {
-			v.context.objects[uintptr(value.Addr().Pointer())] = v
-		} else {
-			v.context.objects[uintptr(value.Pointer())] = v
-		}
-		return nil
-	}
-
-	// return v.SetInternalField(ctx, 0, uint32(id))
+	v.context.receivers[value.Pointer()] = v
 }
 
 // func (v *Value) AddFinalizer(finalizer func()) {
@@ -751,22 +987,37 @@ func valueWeakCallbackHandler(pid C.String) {
 	// 	return nil
 }
 
-func (v *Value) releaseWithContext(ctx context.Context) {
-	v.context.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
-		tracer.Remove(v)
-		runtime.SetFinalizer(v, nil)
+func (v *Value) release() {
+	ctx := v.context.isolate.GetExecutionContext()
 
-		if v.context.pointer != nil {
-			C.v8_Value_Release(v.context.pointer, v.pointer)
+	v.context.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
+		v.refCount--
+
+		if v.refCount > 0 {
+			runtime.SetFinalizer(v, (*Value).release)
+			return nil, nil
+		} else {
+			runtime.SetFinalizer(v, nil)
 		}
+
+		if v.info == nil {
+			panic(fmt.Errorf("overrelease on instance: %s (%s)", v, v.kinds))
+		}
+
+		// tracer.Release(v)
+		v.info.internal = nil
+		C.v8_Value_ValueTuple_Release(v.context.pointer, v.info)
+		v.context.values--
+
 		v.context = nil
+		v.info = nil
 		v.pointer = nil
+		v.kinds = kinds(KindUndefined)
 
 		return nil, nil
 	})
 }
 
-func (v *Value) release() {
-	ctx := WithContext(context.Background())
-	v.releaseWithContext(ctx)
+func (d *PropertyDescriptor) V8Construct(in FunctionArgs) error {
+	return nil
 }

@@ -2,6 +2,10 @@
 #include "v8_c_private.h"
 
 auto allocator = v8::ArrayBuffer::Allocator::NewDefaultAllocator();
+void v8_Isolate_AddImportModuleDynamicallyCallbackHandler(IsolatePtr pIsolate);
+void BeforeCallEnteredCallback(v8::Isolate *isolate);
+void CallCompletedCallback(v8::Isolate *isolate);
+
 
 extern "C"
 {
@@ -11,7 +15,7 @@ extern "C"
   //   return StartupData{data.data, data.raw_size};
   // }
 
-  IsolatePtr v8_Isolate_New(StartupData startupData)
+  IsolatePtr v8_Isolate_New(void *data, StartupData startupData)
   {
     std::shared_ptr<v8::ArrayBuffer::Allocator> allocator(v8::ArrayBuffer::Allocator::NewDefaultAllocator());
 
@@ -27,23 +31,27 @@ extern "C"
     }
 
     auto isolate = v8::Isolate::New(createParams);
+    isolate->SetData(0, data);
+
     // isolate->Enter();
+    v8_Isolate_AddImportModuleDynamicallyCallbackHandler(isolate);
+    isolate->AddBeforeCallEnteredCallback(BeforeCallEnteredCallback);
+    isolate->AddCallCompletedCallback(CallCompletedCallback);
 
     return isolate;
-    // return NULL;
   }
 
   void v8_Isolate_Enter(IsolatePtr pIsolate)
   {
-    ISOLATE_SCOPE(static_cast<v8::Isolate *>(pIsolate));
-
+    v8::Isolate *isolate = static_cast<v8::Isolate *>(pIsolate);
+    v8::Locker __locker(isolate);
     isolate->Enter();
   }
 
   void v8_Isolate_Exit(IsolatePtr pIsolate)
   {
-    ISOLATE_SCOPE(static_cast<v8::Isolate *>(pIsolate));
-
+    v8::Isolate *isolate = static_cast<v8::Isolate *>(pIsolate);
+    v8::Locker __locker(isolate);
     isolate->Exit();
   }
 
@@ -128,4 +136,12 @@ extern "C"
     v8::Isolate *isolate = static_cast<v8::Isolate *>(isolate_ptr);
     isolate->Dispose();
   }
+}
+
+void BeforeCallEnteredCallback(v8::Isolate *isolate) {
+  beforeCallEnteredCallback(isolate->GetData(0));
+}
+
+void CallCompletedCallback(v8::Isolate *isolate) {
+  callCompletedCallback(isolate->GetData(0));
 }

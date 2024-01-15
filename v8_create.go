@@ -14,18 +14,23 @@ import (
 	"time"
 	"unicode"
 	"unsafe"
-
-	refutils "github.com/grexie/refutils"
 )
+
+var marshallers = map[reflect.Type]reflect.Value{}
+var unmarshallers = map[reflect.Type]reflect.Value{}
+
+func AddMarshaller(t reflect.Type, marshaller any) error {
+	marshallers[t] = reflect.ValueOf(marshaller)
+	return nil
+}
+
+func AddUnmarshaller(t reflect.Type, unmarshaller any) error {
+	unmarshallers[t] = reflect.ValueOf(unmarshaller)
+	return nil
+}
 
 type Marshaler interface {
 	MarshalV8(ctx context.Context) any
-}
-
-type valueRef struct {
-	refutils.RefHolder
-
-	value reflect.Value
 }
 
 type stringKeys []reflect.Value
@@ -48,13 +53,20 @@ var getterType = reflect.TypeOf(Getter(nil))
 var setterType = reflect.TypeOf(Setter(nil))
 var stringType = reflect.TypeOf(string(""))
 var timeType = reflect.TypeOf(time.Time{})
+var durationType = reflect.TypeOf(time.Duration(0))
 var valueType = reflect.TypeOf((*Value)(nil))
+var anyType = reflect.TypeOf((any)(nil))
 var marshalerType = reflect.TypeOf((*Marshaler)(nil)).Elem()
 var errorType = reflect.TypeOf((*error)(nil)).Elem()
+var v8ErrorType = reflect.TypeOf((*Error)(nil)).Elem()
 var functionArgsType = reflect.TypeOf((*FunctionArgs)(nil)).Elem()
 
 // https://stackoverflow.com/a/23555352
 func isZero(v reflect.Value) bool {
+	if !v.IsValid() || v.IsZero() {
+		return true
+	}
+
 	switch v.Kind() {
 	case reflect.Func, reflect.Map, reflect.Slice:
 		return v.IsNil()
@@ -74,11 +86,20 @@ func isZero(v reflect.Value) bool {
 
 	// Compare other types directly:
 	z := reflect.Zero(v.Type())
-	return v.Interface() == z.Interface()
+
+	if v.CanInterface() && z.CanInterface() {
+		return v.Interface() == z.Interface()
+	} else {
+		return false
+	}
 }
 
 func (c *Context) Create(ctx context.Context, v interface{}) (*Value, error) {
-	return c._create(ctx, nil, v)
+	return c._create(ctx, nil, v, true)
+}
+
+func (c *Context) CreateWithoutMarshallers(ctx context.Context, v interface{}) (*Value, error) {
+	return c._create(ctx, nil, v, false)
 }
 
 func (c *Context) New(ctx context.Context, cons any, args ...any) (any, error) {
@@ -118,13 +139,13 @@ func (c *Context) New(ctx context.Context, cons any, args ...any) (any, error) {
 }
 
 func (c *Context) CreateWithName(ctx context.Context, name string, v interface{}) (*Value, error) {
-	return c._create(ctx, &name, v)
+	return c._create(ctx, &name, v, true)
 }
 
-func (c *Context) _create(ctx context.Context, name *string, v any) (*Value, error) {
+func (c *Context) _create(ctx context.Context, name *string, v any, withMarshallers bool) (*Value, error) {
 	pv, err := c.isolate.Sync(ctx, func(ctx context.Context) (any, error) {
 		rv := reflect.ValueOf(v)
-		value, err := c.create(ctx, rv, name)
+		value, err := c.create(ctx, rv, name, withMarshallers)
 		return value, err
 	})
 
@@ -135,9 +156,9 @@ func (c *Context) _create(ctx context.Context, name *string, v any) (*Value, err
 	}
 }
 
-func (c *Context) createImmediateValue(ctx context.Context, v C.ImmediateValue, kinds kinds) (*Value, error) {
+func (c *Context) createImmediateValue(ctx context.Context, v C.ImmediateValue) (*Value, error) {
 	pv, err := c.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
-		return c.newValue(C.v8_Context_Create(c.pointer, v), C.Kinds(kinds)), nil
+		return c.newValueFromTuple(ctx, C.v8_Context_Create(c.pointer, v))
 	})
 
 	if err != nil {
@@ -159,25 +180,39 @@ func marshalValue(ctx context.Context, val reflect.Value) reflect.Value {
 	return val
 }
 
-func (c *Context) create(ctx context.Context, v reflect.Value, name *string) (*Value, error) {
+func (c *Context) create(ctx context.Context, v reflect.Value, name *string, withMarshallers bool) (*Value, error) {
 	pv, err := c.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
-
-		if !v.IsValid() {
+		if !v.IsValid() || (v.Kind() == reflect.Interface || v.Kind() == reflect.Pointer || v.Kind() == reflect.Ptr || v.Kind() == reflect.Func || v.Kind() == reflect.Chan || v.Kind() == reflect.Slice || v.Kind() == reflect.Map) && v.IsNil() {
 			return c.Undefined(ctx)
 		}
 
-		if v.Type() == valueType {
-			return v.Interface().(*Value), nil
+		if v.CanAddr() && v.Addr().CanConvert(valueType) {
+			value := v.Addr().Interface().(*Value)
+			return value, nil
+		} else if v.CanConvert(valueType) {
+			value := v.Interface().(*Value)
+			return value, nil
 		}
 
 		v = marshalValue(ctx, v)
 
-		if v.Type().ConvertibleTo(errorType) {
+		if withMarshallers {
+			if marshaller, ok := marshallers[v.Type()]; ok {
+				rvs := marshaller.Call([]reflect.Value{reflect.ValueOf(ctx), v})
+				if !rvs[1].IsNil() {
+					return nil, rvs[1].Interface().(error)
+				} else {
+					v = rvs[0]
+				}
+			}
+		}
+
+		if v.Type().ConvertibleTo(errorType) && !v.Type().ConvertibleTo(v8ErrorType) {
 			if global, err := c.Global(ctx); err != nil {
 				return nil, err
 			} else if errorClass, err := global.Get(ctx, "Error"); err != nil {
 				return nil, err
-			} else if message, err := c.create(ctx, reflect.ValueOf(fmt.Sprintf("%v", v.Interface())), name); err != nil {
+			} else if message, err := c.create(ctx, reflect.ValueOf(fmt.Sprintf("%v", v.Interface())), name, withMarshallers); err != nil {
 				return nil, err
 			} else if errorObject, err := errorClass.New(ctx, message); err != nil {
 				return nil, err
@@ -188,7 +223,12 @@ func (c *Context) create(ctx context.Context, v reflect.Value, name *string) (*V
 
 		if v.Type() == timeType {
 			msec := C.double(v.Interface().(time.Time).UnixNano()) / 1e6
-			return c.createImmediateValue(ctx, C.ImmediateValue{_type: C.tDATE, _float64: msec}, unionKindDate)
+			return c.createImmediateValue(ctx, C.ImmediateValue{_type: C.tDATE, _float64: msec})
+		}
+
+		if v.Type() == durationType {
+			msec := C.double(v.Interface().(time.Duration).Nanoseconds()) / 1e6
+			return c.createImmediateValue(ctx, C.ImmediateValue{_type: C.tFLOAT64, _float64: msec})
 		}
 
 		switch v.Kind() {
@@ -197,22 +237,22 @@ func (c *Context) create(ctx context.Context, v reflect.Value, name *string) (*V
 			if v.Bool() {
 				b = C.bool(true)
 			}
-			return c.createImmediateValue(ctx, C.ImmediateValue{_type: C.tBOOL, _bool: b}, mask(KindBoolean))
+			return c.createImmediateValue(ctx, C.ImmediateValue{_type: C.tBOOL, _bool: b})
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
 			reflect.Float32, reflect.Float64:
 			n := C.double(v.Convert(float64Type).Float())
-			return c.createImmediateValue(ctx, C.ImmediateValue{_type: C.tFLOAT64, _float64: n}, mask(KindNumber))
+			return c.createImmediateValue(ctx, C.ImmediateValue{_type: C.tFLOAT64, _float64: n})
 		case reflect.String:
 			s := v.String()
 			ps := C.ByteArray{data: C.CString(s), length: C.int(len(s))}
 			defer C.free(unsafe.Pointer(ps.data))
-			return c.createImmediateValue(ctx, C.ImmediateValue{_type: C.tSTRING, _data: ps}, unionKindString)
+			return c.createImmediateValue(ctx, C.ImmediateValue{_type: C.tSTRING, _data: ps})
 		case reflect.UnsafePointer, reflect.Uintptr:
 			s := fmt.Sprintf("%p", v.UnsafePointer())
 			ps := C.ByteArray{data: C.CString(s), length: C.int(len(s))}
 			defer C.free(unsafe.Pointer(ps.data))
-			return c.createImmediateValue(ctx, C.ImmediateValue{_type: C.tSTRING, _data: ps}, unionKindString)
+			return c.createImmediateValue(ctx, C.ImmediateValue{_type: C.tSTRING, _data: ps})
 		case reflect.Complex64, reflect.Complex128:
 			return nil, fmt.Errorf("complex not supported: %#v", v.Interface())
 		case reflect.Chan:
@@ -225,41 +265,65 @@ func (c *Context) create(ctx context.Context, v reflect.Value, name *string) (*V
 			}
 			return nil, fmt.Errorf("func not supported: %#v", v.Interface())
 		case reflect.Interface, reflect.Ptr:
-			return c.create(ctx, v.Elem(), name)
+			return c.create(ctx, v.Elem(), name, withMarshallers)
 		case reflect.Map:
 			if v.Type().Key() != stringType {
 				return nil, fmt.Errorf("map keys must be strings, %s not permissable in v8", v.Type().Key())
 			}
 
-			if o, err := c.createImmediateValue(ctx, C.ImmediateValue{_type: C.tOBJECT}, mask(KindObject)); err != nil {
+			if o, err := c.createImmediateValue(ctx, C.ImmediateValue{_type: C.tOBJECT}); err != nil {
 				return nil, err
 			} else {
 				keys := v.MapKeys()
 				sort.Sort(stringKeys(keys))
 				for _, k := range keys {
-					if vk, err := c.create(ctx, v.MapIndex(k), name); err != nil {
+					if vk, err := c.create(ctx, v.MapIndex(k), name, withMarshallers); err != nil {
 						return nil, fmt.Errorf("map key %q: %v", k.String(), err)
 					} else if err := o.Set(ctx, k.String(), vk); err != nil {
 						return nil, err
-					} else {
-						vk.releaseWithContext(ctx)
 					}
 				}
 
 				return o, nil
 			}
 		case reflect.Struct:
-			if value, ok := c.objects[uintptr(v.Addr().Pointer())]; ok {
+			c.receiversMutex.Lock()
+			value, ok := c.receivers[v.Addr().Pointer()]
+			c.receiversMutex.Unlock()
+
+			if ok {
 				return value, nil
 			} else if p, err := c.createPrototype(ctx, nil, v, v.Type()); err != nil {
 				return nil, err
 			} else if fn, err := p.GetFunction(ctx); err != nil {
 				return nil, err
-			} else if value, err := fn.New(ctx); err != nil {
+			} else if value, err := fn.NewValue(ctx); err != nil {
 				return nil, err
+			} else if method, ok := reflect.PointerTo(v.Type()).MethodByName("V8Construct"); ok {
+				value.SetReceiver(ctx, v.Addr())
+
+				mrv := v
+
+				if method.Type.In(0).Kind() == reflect.Pointer && v.Kind() != reflect.Pointer {
+					mrv = mrv.Addr()
+				} else if method.Type.In(0).Kind() != reflect.Pointer && v.Kind() == reflect.Pointer {
+					mrv = mrv.Elem()
+				}
+
+				method.Func.Call([]reflect.Value{mrv, reflect.ValueOf(FunctionArgs{
+					ExecutionContext: ctx,
+					Context:          c,
+					This:             value,
+					IsConstructCall:  true,
+					Args:             []*Value{},
+					Holder:           value,
+				})})
+
+				return value, nil
 			} else {
-				c.objects[uintptr(v.Addr().Pointer())] = value
-				value.SetReceiver(ctx, &v)
+
+				// log.Println("SETTING RECEIVER", value, v)
+				value.SetReceiver(ctx, v.Addr())
 				return value, nil
 			}
 		case reflect.Array, reflect.Slice:
@@ -279,7 +343,6 @@ func (c *Context) create(ctx context.Context, v reflect.Value, name *string) (*V
 						_type: C.tARRAYBUFFER,
 						_data: C.ByteArray{data: pb, length: C.int(v.Len())},
 					},
-					unionKindArrayBuffer,
 				)
 			} else {
 				if o, err := c.createImmediateValue(ctx,
@@ -287,17 +350,14 @@ func (c *Context) create(ctx context.Context, v reflect.Value, name *string) (*V
 						_type: C.tARRAY,
 						_data: C.ByteArray{data: nil, length: C.int(v.Len())},
 					},
-					unionKindArray,
 				); err != nil {
 					return nil, err
 				} else {
 					for i := 0; i < v.Len(); i++ {
-						if v, err := c.create(ctx, v.Index(i), name); err != nil {
+						if v, err := c.create(ctx, v.Index(i), name, withMarshallers); err != nil {
 							return nil, fmt.Errorf("index %d: %v", i, err)
 						} else if err := o.SetIndex(ctx, i, v); err != nil {
 							return nil, err
-						} else {
-							v.releaseWithContext(ctx)
 						}
 					}
 
@@ -443,7 +503,7 @@ func (c *Context) createConstructorInstance(ctx context.Context, name *string, c
 					return nil, r[1].Interface().(error)
 				}
 
-				in.This.SetReceiver(in.ExecutionContext, &r[0])
+				in.This.SetReceiver(in.ExecutionContext, r[0])
 				return in.This, nil
 			}
 
@@ -471,8 +531,6 @@ func (c *Context) createPrototypeInstance(ctx context.Context, name *string, v r
 
 		if fn, ok := c.prototypes[prototype]; shared && ok {
 			return fn, nil
-		} else if prototype.Kind() != reflect.Interface && prototype.Kind() != reflect.Struct {
-			return nil, fmt.Errorf("prototype must be an interface: %+v", prototype)
 		} else if fn, err := c.NewFunctionTemplate(ctx, func(in FunctionArgs) (*Value, error) {
 			return in.This, nil
 		}); err != nil {
@@ -498,23 +556,25 @@ func (c *Context) createPrototypeInstance(ctx context.Context, name *string, v r
 
 			baseFns := []*FunctionTemplate{}
 
-			for i := 0; i < prototype.NumField(); i++ {
-				f := prototype.Field(i)
+			if prototype.Kind() == reflect.Struct {
+				for i := 0; i < prototype.NumField(); i++ {
+					f := prototype.Field(i)
 
-				if f.Anonymous {
-					sub := prototype.Field(i).Type
+					if f.Anonymous {
+						sub := prototype.Field(i).Type
 
-					for sub.Kind() == reflect.Ptr {
-						sub = sub.Elem()
-					}
+						for sub.Kind() == reflect.Ptr {
+							sub = sub.Elem()
+						}
 
-					if sub.Kind() == reflect.Struct {
-						elem := reflect.Zero(sub)
+						if sub.Kind() == reflect.Struct {
+							elem := reflect.Zero(sub)
 
-						if _, err := c.createPrototype(ctx, nil, elem, sub); err != nil {
-							return nil, err
-						} else {
-							baseFns = append(baseFns, c.prototypes[sub])
+							if _, err := c.createPrototype(ctx, nil, elem, sub); err != nil {
+								return nil, err
+							} else {
+								baseFns = append(baseFns, c.prototypes[sub])
+							}
 						}
 					}
 				}
@@ -555,21 +615,50 @@ func (c *Context) createPrototypeInstance(ctx context.Context, name *string, v r
 	}
 }
 
+func (c *Context) Receiver(ctx context.Context, self *Value, t reflect.Type) (reflect.Value, error) {
+	if self.IsNil() {
+		return reflect.Value{}, nil
+	}
+
+	if r := self.Receiver(ctx); isZero(r) {
+		if m, ok := t.MethodByName("V8Construct"); ok {
+			in := FunctionArgs{
+				ExecutionContext: ctx,
+				Context:          c,
+				This:             self,
+				IsConstructCall:  true,
+				Args:             []*Value{},
+				Holder:           self,
+			}
+
+			v := m.Func.Call([]reflect.Value{reflect.New(t.Elem()), reflect.ValueOf(in)})
+			self.SetReceiver(ctx, v[0])
+
+			if !v[1].IsNil() {
+				return reflect.Value{}, v[1].Interface().(error)
+			} else {
+				return v[0], nil
+			}
+		} else {
+			return reflect.Value{}, fmt.Errorf("receiver not found")
+		}
+	} else {
+		return r, nil
+	}
+}
+
 func (c *Context) createFieldGetter(ctx context.Context, t reflect.Type, name string) Getter {
 	return func(in GetterArgs) (*Value, error) {
 		pv, err := in.Context.isolate.Sync(in.ExecutionContext, func(ctx context.Context) (interface{}, error) {
-			if r, err := in.Holder.Receiver(ctx, t); err != nil {
+			if r, err := c.Receiver(ctx, in.Holder, t); err != nil {
 				return nil, err
-			} else if r == nil {
-				return nil, fmt.Errorf("receiver not found")
 			} else {
-				for r.Kind() == reflect.Ptr && !r.IsNil() {
-					v := r.Elem()
-					r = &v
+				for r.Kind() == reflect.Ptr && !isZero(r) {
+					r = r.Elem()
 				}
 
 				fval := r.FieldByName(name)
-				if v, err := in.Context.create(ctx, fval, nil); err != nil {
+				if v, err := in.Context.create(ctx, fval, nil, true); err != nil {
 					return nil, fmt.Errorf("field %q: %v", name, err)
 				} else {
 					return v, nil
@@ -588,14 +677,11 @@ func (c *Context) createFieldGetter(ctx context.Context, t reflect.Type, name st
 func (c *Context) createFieldSetter(ctx context.Context, t reflect.Type, name string) Setter {
 	return func(in SetterArgs) error {
 		_, err := in.Context.isolate.Sync(in.ExecutionContext, func(ctx context.Context) (interface{}, error) {
-			if r, err := in.Holder.Receiver(ctx, t); err != nil {
+			if r, err := c.Receiver(ctx, in.Holder, t); err != nil {
 				return nil, err
-			} else if r == nil {
-				return nil, fmt.Errorf("receiver not found")
 			} else {
 				if r.Kind() == reflect.Ptr {
-					v := r.Elem()
-					r = &v
+					r = r.Elem()
 				}
 
 				fval := r.FieldByName(name)
@@ -618,21 +704,15 @@ func (c *Context) createGetter(ctx context.Context, t reflect.Type, method refle
 	methodReceiver := strings.Trim(methodNameParts[len(methodNameParts)-2], "(*)")
 	return func(in GetterArgs) (*Value, error) {
 		pv, err := in.Context.isolate.Sync(in.ExecutionContext, func(ctx context.Context) (interface{}, error) {
-			if r, err := in.Holder.Receiver(ctx, t); err != nil {
+			if r, err := c.Receiver(ctx, in.Holder, t); err != nil {
 				return nil, err
-			} else if r == nil {
-				return nil, fmt.Errorf("receiver not found")
 			} else {
 				if r.Kind() == reflect.Pointer || r.Kind() == reflect.Interface {
 					if methodReceiver != r.Type().Elem().Name() {
-						v := r.Elem()
-						r = &v
-						v = r.FieldByName(methodReceiver)
-						r = &v
+						r = r.Elem().FieldByName(methodReceiver)
 					}
 				} else if methodReceiver != r.Type().Name() {
-					v := r.FieldByName(methodReceiver)
-					r = &v
+					r = r.FieldByName(methodReceiver)
 				}
 				method := r.MethodByName(methodName)
 				v := method.Call([]reflect.Value{reflect.ValueOf(in)})
@@ -662,21 +742,15 @@ func (c *Context) createSetter(ctx context.Context, t reflect.Type, method refle
 	return func(in SetterArgs) error {
 		_, err := in.Context.isolate.Sync(in.ExecutionContext, func(ctx context.Context) (interface{}, error) {
 
-			if r, err := in.Holder.Receiver(ctx, t); err != nil {
+			if r, err := c.Receiver(ctx, in.Holder, t); err != nil {
 				return nil, err
-			} else if r == nil {
-				return nil, fmt.Errorf("receiver not found")
 			} else {
 				if r.Kind() == reflect.Pointer || r.Kind() == reflect.Interface {
 					if methodReceiver != r.Type().Elem().Name() {
-						v := r.Elem()
-						r = &v
-						v = r.FieldByName(methodReceiver)
-						r = &v
+						r = r.Elem().FieldByName(methodReceiver)
 					}
 				} else if methodReceiver != r.Type().Name() {
-					v := r.FieldByName(methodReceiver)
-					r = &v
+					r = r.FieldByName(methodReceiver)
 				}
 				method := r.MethodByName(methodName)
 				v := method.Call([]reflect.Value{reflect.ValueOf(in)})
@@ -700,26 +774,20 @@ func (c *Context) createFunctionAccessor(ctx context.Context, t reflect.Type, me
 	g, err := c.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
 		if ft, err := c.NewFunctionTemplate(ctx, func(in FunctionArgs) (*Value, error) {
 			pv, err := in.Context.isolate.Sync(in.ExecutionContext, func(ctx context.Context) (interface{}, error) {
-				if r, err := in.Holder.Receiver(ctx, t); err != nil {
+				if r, err := c.Receiver(ctx, in.Holder, t); err != nil {
 					return nil, err
-				} else if r == nil {
-					return nil, fmt.Errorf("receiver not found: %s", name)
 				} else {
-					var r2 *reflect.Value = r
+					var r2 reflect.Value = r
 					if r.Kind() == reflect.Pointer || r.Kind() == reflect.Interface {
 						if methodReceiver != r.Type().Elem().Name() {
-							v := r.Elem()
-							r2 = &v
-							v = r2.FieldByName(methodReceiver)
-							r2 = &v
+							r2 = r.Elem().FieldByName(methodReceiver)
 						}
 					} else if methodReceiver != r.Type().Name() {
-						v := r.FieldByName(methodReceiver)
-						r2 = &v
+						r2 = r.FieldByName(methodReceiver)
 					}
 					var v []reflect.Value
 					if !r2.IsValid() || r2.IsNil() || r2.IsZero() {
-						v = method.Call([]reflect.Value{*r, reflect.ValueOf(in)})
+						v = method.Call([]reflect.Value{r, reflect.ValueOf(in)})
 					} else {
 						m := r2.MethodByName(methodName)
 						v = m.Call([]reflect.Value{reflect.ValueOf(in)})
@@ -765,7 +833,7 @@ func (c *Context) writePrototypeFields(ctx context.Context, v *ObjectTemplate, o
 		getters := map[string]Getter{}
 		setters := map[string]Setter{}
 
-		if prototype.Kind() != reflect.Ptr {
+		if prototype.Kind() == reflect.Struct {
 			for i := 0; i < prototype.NumField(); i++ {
 				f := prototype.Field(i)
 

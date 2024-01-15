@@ -104,21 +104,4 @@ inline Kinds v8_Value_KindsFromLocal(v8::Local<v8::Value> value)
   return kinds;
 }
 
-inline ValueTuple v8_Value_ValueTuple()
-{
-  return ValueTuple{NULL, 0, NULL};
-}
-
-inline ValueTuple v8_Value_ValueTuple(v8::Isolate *isolate, v8::Local<v8::Value> value)
-{
-  ValuePtr v = new Value(isolate, value);
-
-  return ValueTuple{v, v8_Value_KindsFromLocal(value)};
-}
-
-inline ValueTuple v8_Value_ValueTuple_Error(v8::Isolate *isolate, const v8::Local<v8::Value> &value)
-{
-  return ValueTuple{NULL, 0, v8_String_Create(isolate, value)};
-}
-
 #endif

@@ -29,7 +29,7 @@ func (i *Isolate) NewInspector(callbacks InspectorCallbacks) *Inspector {
 	nextInspectorID++
 	inspector := &Inspector{C.v8_Inspector_New(i.pointer, C.int(inspectorID)), inspectorID, callbacks}
 	inspectors[inspectorID] = inspector
-	runtime.SetFinalizer(inspector, (*Inspector).Release)
+	runtime.SetFinalizer(inspector, (*Inspector).release)
 	return inspector
 }
 
@@ -52,7 +52,7 @@ func (i *Inspector) DispatchMessage(message string) {
 	C.free(unsafe.Pointer(messageCStr))
 }
 
-func (i *Inspector) Release() {
+func (i *Inspector) release() {
 	// TODO remove all contexts that have been referenced in AddContext, RemoveContext
 	if i.ptr != nil {
 		C.v8_Inspector_Release(i.ptr)

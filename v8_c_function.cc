@@ -41,11 +41,19 @@ extern "C"
     function->SetClassName(v8::String::NewFromUtf8(isolate, name).ToLocalChecked());
   }
 
-  ValuePtr v8_FunctionTemplate_GetFunction(ContextPtr pContext, FunctionTemplatePtr pFunction)
+  CallResult v8_FunctionTemplate_GetFunction(ContextPtr pContext, FunctionTemplatePtr pFunction)
   {
     VALUE_SCOPE(pContext);
     v8::Local<v8::FunctionTemplate> function = static_cast<FunctionTemplate *>(pFunction)->Get(isolate);
-    return new Value(isolate, function->GetFunction(context).ToLocalChecked());
+
+    v8::MaybeLocal<v8::Function> fn = function->GetFunction(context);
+
+    if (fn.IsEmpty())
+    {
+      return v8_Value_ValueTuple_Error(isolate, v8_String_FromString(isolate, "invalid function"));
+    }
+
+    return v8_Value_ValueTuple(isolate, context, fn.ToLocalChecked());
   }
 
   ObjectTemplatePtr v8_FunctionTemplate_PrototypeTemplate(ContextPtr pContext, FunctionTemplatePtr pFunction)
@@ -101,19 +109,21 @@ extern "C"
     ISOLATE_SCOPE(info.GetIsolate());
     v8::HandleScope handleScope(isolate);
 
+    v8::Local<v8::Context> context = info.GetIsolate()->GetCurrentContext();
+
     String id = v8_String_Create(isolate, info.Data());
     CallerInfo callerInfo = v8_StackTrace_CallerInfo(isolate);
-    ValueTuple self = v8_Value_ValueTuple(isolate, info.This());
-    ValueTuple holder = v8_Value_ValueTuple(isolate, info.Holder());
+    CallResult self = v8_Value_ValueTuple(isolate, context, info.This());
+    CallResult holder = v8_Value_ValueTuple(isolate, context, info.Holder());
 
     int argc = info.Length();
-    ValueTuple argv[argc];
+    CallResult argv[argc];
     for (int i = 0; i < argc; i++)
     {
-      argv[i] = v8_Value_ValueTuple(isolate, info[i]);
+      argv[i] = v8_Value_ValueTuple(isolate, context, info[i]);
     }
 
-    ValueTuple result;
+    CallResult result;
     {
       isolate->Exit();
       v8::Unlocker unlocker(isolate);
@@ -137,17 +147,22 @@ extern "C"
       v8::Local<v8::Value> error = v8::Exception::Error(v8_String_FromString(isolate, result.error));
       isolate->ThrowException(error);
     }
-    else if (result.value == NULL)
+    else if (result.isError)
+    {
+      v8::Local<v8::Value> error = static_cast<Value *>(result.result->value)->Get(isolate);
+      isolate->ThrowException(error);
+    }
+    else if (result.result == NULL || result.result->value == NULL)
     {
       info.GetReturnValue().Set(v8::Undefined(isolate));
     }
     else
     {
-      v8::Local<v8::Value> value = static_cast<Value *>(result.value)->Get(isolate);
-
-      info.GetReturnValue()
-          .Set(value);
+      v8::Local<v8::Value> value = static_cast<Value *>(result.result->value)->Get(isolate);
+      info.GetReturnValue().Set(value);
     }
+
+    v8_Value_ValueTuple_Release(context, result.result);
   }
 
   void GetterCallbackHandler(v8::Local<v8::String> property, const v8::PropertyCallbackInfo<v8::Value> &info)
@@ -155,13 +170,15 @@ extern "C"
     ISOLATE_SCOPE(info.GetIsolate());
     v8::HandleScope handleScope(isolate);
 
+    v8::Local<v8::Context> context = info.GetIsolate()->GetCurrentContext();
+
     String id = v8_String_Create(isolate, info.Data());
     CallerInfo callerInfo = v8_StackTrace_CallerInfo(isolate);
-    ValueTuple self = v8_Value_ValueTuple(isolate, info.This());
-    ValueTuple holder = v8_Value_ValueTuple(isolate, info.Holder());
+    CallResult self = v8_Value_ValueTuple(isolate, context, info.This());
+    CallResult holder = v8_Value_ValueTuple(isolate, context, info.Holder());
     String key = v8_String_Create(isolate, property);
 
-    ValueTuple result;
+    CallResult result;
     {
       isolate->Exit();
       v8::Unlocker unlocker(isolate);
@@ -185,15 +202,22 @@ extern "C"
       v8::Local<v8::Value> error = v8::Exception::Error(v8_String_FromString(isolate, result.error));
       isolate->ThrowException(error);
     }
-    else if (result.value == NULL)
+    else if (result.isError)
+    {
+      v8::Local<v8::Value> error = static_cast<Value *>(result.result->value)->Get(isolate);
+      isolate->ThrowException(error);
+    }
+    else if (result.result == NULL || result.result->value == NULL)
     {
       info.GetReturnValue().Set(v8::Undefined(isolate));
     }
     else
     {
-      v8::Local<v8::Value> value = static_cast<Value *>(result.value)->Get(isolate);
+      v8::Local<v8::Value> value = static_cast<Value *>(result.result->value)->Get(isolate);
       info.GetReturnValue().Set(value);
     }
+
+    v8_Value_ValueTuple_Release(context, result.result);
   }
 
   void SetterCallbackHandler(v8::Local<v8::String> property, v8::Local<v8::Value> value, const v8::PropertyCallbackInfo<void> &info)
@@ -201,14 +225,16 @@ extern "C"
     ISOLATE_SCOPE(info.GetIsolate());
     v8::HandleScope handleScope(isolate);
 
+    v8::Local<v8::Context> context = info.GetIsolate()->GetCurrentContext();
+
     String id = v8_String_Create(isolate, info.Data());
     CallerInfo callerInfo = v8_StackTrace_CallerInfo(isolate);
-    ValueTuple self = v8_Value_ValueTuple(isolate, info.This());
-    ValueTuple holder = v8_Value_ValueTuple(isolate, info.Holder());
+    CallResult self = v8_Value_ValueTuple(isolate, context, info.This());
+    CallResult holder = v8_Value_ValueTuple(isolate, context, info.Holder());
     String key = v8_String_Create(isolate, property);
-    ValueTuple valueTuple = v8_Value_ValueTuple(isolate, value);
+    CallResult valueTuple = v8_Value_ValueTuple(isolate, context, value);
 
-    ValueTuple result;
+    CallResult result;
     {
       isolate->Exit();
       v8::Unlocker unlocker(isolate);
@@ -232,5 +258,12 @@ extern "C"
       v8::Local<v8::Value> error = v8::Exception::Error(v8_String_FromString(isolate, result.error));
       isolate->ThrowException(error);
     }
+    else if (result.isError)
+    {
+      v8::Local<v8::Value> error = static_cast<Value *>(result.result->value)->Get(isolate);
+      isolate->ThrowException(error);
+    }
+
+    v8_Value_ValueTuple_Release(context, result.result);
   }
 }

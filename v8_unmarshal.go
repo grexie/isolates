@@ -6,16 +6,45 @@ import "C"
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
+	"time"
 	"unsafe"
 )
 
 func (v *Value) Unmarshal(ctx context.Context, t reflect.Type) (*reflect.Value, error) {
 	rv, err := v.context.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
-		if t == valueType {
+		if t == valueType || t == anyType {
 			v := reflect.ValueOf(v)
 			return &v, nil
+		}
+
+		if t == errorType {
+			if s, err := v.StringValue(ctx); err != nil {
+				return nil, err
+			} else {
+				rv := reflect.ValueOf(errors.New(s))
+				return &rv, nil
+			}
+		}
+
+		if t == timeType {
+			if msec, err := v.Int64(ctx); err != nil {
+				return nil, err
+			} else {
+				rv := reflect.ValueOf(time.UnixMilli(msec))
+				return &rv, nil
+			}
+		}
+
+		if t == durationType {
+			if msec, err := v.Float64(ctx); err != nil {
+				return nil, err
+			} else {
+				rv := reflect.ValueOf(time.Duration(msec * float64(time.Millisecond)))
+				return &rv, nil
+			}
 		}
 
 		switch t.Kind() {
@@ -69,19 +98,88 @@ func (v *Value) Unmarshal(ctx context.Context, t reflect.Type) (*reflect.Value, 
 			}
 		case reflect.Func:
 		case reflect.Ptr, reflect.Interface:
-			return v.Receiver(ctx, t)
+			r := v.Receiver(ctx)
+
+			if r.Kind() != reflect.Pointer && r.CanAddr() {
+				r = r.Addr()
+			}
+
+			return &r, nil
 		case reflect.Map:
+			if keys, err := v.Keys(ctx); err != nil {
+				return nil, err
+			} else {
+				rv := reflect.MakeMap(t)
+				for _, k := range keys {
+					if itemV, err := v.Get(ctx, k); err != nil {
+						return nil, err
+					} else if itemR, err := itemV.Unmarshal(ctx, t.Elem()); err != nil {
+						return nil, err
+					} else {
+						rv.SetMapIndex(reflect.ValueOf(k), *itemR)
+					}
+				}
+				return &rv, nil
+			}
 		case reflect.String:
-			if string, err := v.String(ctx); err != nil {
+			if string, err := v.StringValue(ctx); err != nil {
 				return nil, err
 			} else {
 				v := reflect.ValueOf(string).Convert(t)
 				return &v, nil
 			}
 		case reflect.Struct:
-			break
+			if rv := v.Receiver(ctx); !isZero(rv) {
+				if rv.Kind() == reflect.Pointer {
+					rv = rv.Elem()
+				}
+
+				return &rv, nil
+			} else {
+				rv := reflect.New(t).Elem()
+
+				for i := 0; i < t.NumField(); i++ {
+					f := t.Field(i)
+
+					name := f.Tag.Get("v8")
+					if name == "" {
+						continue
+					}
+
+					if valuev, err := v.Get(ctx, name); err != nil {
+						return nil, err
+					} else if valuerv, err := valuev.Unmarshal(ctx, f.Type); err != nil {
+						return nil, err
+					} else if !isZero(*valuerv) {
+						rv.FieldByIndex(f.Index).Set(*valuerv)
+					}
+				}
+
+				if method, ok := reflect.PointerTo(t).MethodByName("V8Construct"); ok {
+					v.SetReceiver(ctx, rv)
+
+					mrv := rv
+
+					if method.Type.In(0).Kind() == reflect.Pointer && rv.Kind() != reflect.Pointer {
+						mrv = mrv.Addr()
+					} else if method.Type.In(0).Kind() != reflect.Pointer && rv.Kind() == reflect.Pointer {
+						mrv = mrv.Elem()
+					}
+
+					method.Func.Call([]reflect.Value{mrv, reflect.ValueOf(FunctionArgs{
+						ExecutionContext: ctx,
+						Context:          v.context,
+						This:             v,
+						IsConstructCall:  true,
+						Args:             []*Value{},
+						Holder:           v,
+					})})
+				}
+
+				return &rv, nil
+			}
 		case reflect.UnsafePointer:
-			if string, err := v.String(ctx); err != nil {
+			if string, err := v.StringValue(ctx); err != nil {
 				return nil, err
 			} else {
 				var u unsafe.Pointer

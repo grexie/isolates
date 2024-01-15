@@ -23,6 +23,7 @@ extern "C"
   typedef void *PrivatePtr;
   typedef void *ExternalPtr;
   typedef void *ResolverPtr;
+  typedef void *ReferrerPtr;
 
   typedef struct
   {
@@ -104,12 +105,24 @@ extern "C"
   // to multiple bitmasks or a dynamically-allocated array.
   typedef uint64_t Kinds;
 
+  typedef void *Pointer;
+
   typedef struct
   {
+    int refCount;
     ValuePtr value;
     Kinds kinds;
-    Error error;
+    Pointer internal;
   } ValueTuple;
+
+  typedef ValueTuple *ValueTuplePtr;
+
+  typedef struct
+  {
+    ValueTuplePtr result;
+    Error error;
+    bool isError;
+  } CallResult;
 
   typedef struct
   {
@@ -137,16 +150,25 @@ extern "C"
     CallbackType _type;
     String id;
     CallerInfo caller;
-    ValueTuple self;
-    ValueTuple holder;
+    CallResult self;
+    CallResult holder;
 
     bool isConstructCall;
     int argc;
-    ValueTuple *argv;
+    CallResult *argv;
 
     String key;
-    ValueTuple value;
+    CallResult value;
   } CallbackInfo;
+
+  typedef struct
+  {
+    String id;
+    CallResult specifier;
+    CallResult resourceName;
+    CallResult* importAssertions;
+    int importAssertionsLength;
+  } ImportModuleDynamicallyCallbackInfo;
 
   // typedef unsigned int uint32_t;
 
@@ -155,7 +177,7 @@ extern "C"
 
   extern StartupData v8_CreateSnapshotDataBlob(const char *js);
 
-  extern IsolatePtr v8_Isolate_New(StartupData data);
+  extern IsolatePtr v8_Isolate_New(void *data, StartupData startupData);
   extern void v8_Isolate_Terminate(IsolatePtr isolate);
   extern void v8_Isolate_Release(IsolatePtr isolate);
   extern void v8_Isolate_RequestGarbageCollectionForTesting(IsolatePtr pIsolate);
@@ -167,20 +189,20 @@ extern "C"
   extern void v8_Isolate_PerformMicrotaskCheckpoint(IsolatePtr pIsolate);
 
   extern ContextPtr v8_Context_New(IsolatePtr isolate);
-  extern ValueTuple v8_Context_Run(ContextPtr ctx, const char *code, const char *filename);
+  extern CallResult v8_Context_Run(ContextPtr ctx, const char *code, const char *filename, const char *id);
 
   extern FunctionTemplatePtr v8_FunctionTemplate_New(ContextPtr ctx, const char *id);
   extern void v8_FunctionTemplate_Release(ContextPtr ctxptr, FunctionTemplatePtr fnptr);
   extern void v8_FunctionTemplate_Inherit(ContextPtr ctxptr, FunctionTemplatePtr fnptr, FunctionTemplatePtr parentptr);
   extern void v8_FunctionTemplate_SetName(ContextPtr pContext, FunctionTemplatePtr pFunction, const char *name);
-  extern ValuePtr v8_FunctionTemplate_GetFunction(ContextPtr ctx, FunctionTemplatePtr fn);
+  extern CallResult v8_FunctionTemplate_GetFunction(ContextPtr ctx, FunctionTemplatePtr fn);
   extern ObjectTemplatePtr v8_FunctionTemplate_PrototypeTemplate(ContextPtr ctxptr, FunctionTemplatePtr function_ptr);
   extern ObjectTemplatePtr v8_FunctionTemplate_InstanceTemplate(ContextPtr ctxptr, FunctionTemplatePtr function_ptr);
   extern void v8_ObjectTemplate_SetAccessor(ContextPtr ctxptr, ObjectTemplatePtr object_ptr, const char *name, const char *id, bool setter);
   extern void v8_ObjectTemplate_SetInternalFieldCount(ContextPtr ctxptr, ObjectTemplatePtr object_ptr, int count);
   extern void v8_ObjectTemplate_Release(ContextPtr pContext, ObjectTemplatePtr pObjectTemplate);
 
-  extern ValuePtr v8_Context_Global(ContextPtr ctx);
+  extern CallResult v8_Context_Global(ContextPtr ctx);
   extern void v8_Context_Release(ContextPtr ctx);
 
   typedef enum
@@ -193,6 +215,7 @@ extern "C"
     tARRAY,
     tARRAYBUFFER,
     tUNDEFINED,
+    tNULL,
     tDATE, // uses Float64 for msec since Unix epoch
   } ImmediateValueType;
 
@@ -205,27 +228,26 @@ extern "C"
     int64_t _int64;
   } ImmediateValue;
 
-  extern ValuePtr v8_Context_Create(ContextPtr ctx, ImmediateValue val);
+  extern CallResult v8_Context_Create(ContextPtr ctx, ImmediateValue val);
 
   extern void v8_Value_SetWeak(ContextPtr pContext, ValuePtr pValue, const char *id);
-  extern ValueTuple v8_Value_Get(ContextPtr ctx, ValuePtr value, const char *field);
+  extern CallResult v8_Value_Get(ContextPtr ctx, ValuePtr value, const char *field);
   extern Error v8_Value_Set(ContextPtr ctx, ValuePtr value,
                             const char *field, ValuePtr new_value);
   extern Error v8_Value_DefineProperty(ContextPtr ctxptr, ValuePtr valueptr, const char *key, ValuePtr getptr, ValuePtr setptr, bool enumerable, bool configurable);
   extern Error v8_Value_DefinePropertyValue(ContextPtr ctxptr, ValuePtr valueptr, const char *key, ValuePtr valuedestptr, bool enumerable, bool configurable, bool writable);
-  extern ValueTuple v8_Value_GetIndex(ContextPtr ctx, ValuePtr value, int idx);
+  extern CallResult v8_Value_GetIndex(ContextPtr ctx, ValuePtr value, int idx);
   extern int64_t v8_Object_GetInternalField(ContextPtr pContext, ValuePtr pValue, int field);
   extern Error v8_Value_SetIndex(ContextPtr ctx, ValuePtr value, int idx, ValuePtr new_value);
   extern void v8_Object_SetInternalField(ContextPtr ctxptr, ValuePtr value_ptr, int field, uint32_t newValue);
   extern Error v8_Value_SetPrivate(ContextPtr ctxptr, ValuePtr valueptr, PrivatePtr privateptr, ValuePtr new_valueptr);
-  extern ValueTuple v8_Value_GetPrivate(ContextPtr ctxptr, ValuePtr valueptr, PrivatePtr privateptr);
+  extern CallResult v8_Value_GetPrivate(ContextPtr ctxptr, ValuePtr valueptr, PrivatePtr privateptr);
   extern Error v8_Value_DeletePrivate(ContextPtr ctxptr, ValuePtr valueptr, PrivatePtr privateptr);
   extern int v8_Object_GetInternalFieldCount(ContextPtr pContext, ValuePtr pValue);
-  extern ValueTuple v8_Value_Call(ContextPtr ctx, ValuePtr func, ValuePtr self, int argc, ValuePtr *argv);
-  extern ValueTuple v8_Value_New(ContextPtr ctx,
+  extern CallResult v8_Value_Call(ContextPtr ctx, ValuePtr func, ValuePtr self, int argc, ValuePtr *argv);
+  extern CallResult v8_Value_New(ContextPtr ctx,
                                  ValuePtr func,
                                  int argc, ValuePtr *argv);
-  extern void v8_Value_Release(ContextPtr ctx, ValuePtr value);
   extern String v8_Value_String(ContextPtr ctx, ValuePtr value);
 
   extern double v8_Value_Float64(ContextPtr ctx, ValuePtr value);
@@ -235,13 +257,14 @@ extern "C"
   extern bool v8_Value_StrictEquals(ContextPtr ctx, ValuePtr left, ValuePtr right);
   extern ByteArray v8_Value_Bytes(ContextPtr ctx, ValuePtr value);
   extern int v8_Value_ByteLength(ContextPtr ctx, ValuePtr value);
+  extern bool v8_Value_InstanceOf(ContextPtr pContext, ValuePtr pValueLeft, ValuePtr pValueRight);
 
   extern ResolverPtr v8_Promise_NewResolver(ContextPtr pContext);
   extern Error v8_Resolver_Resolve(ContextPtr pContext, ResolverPtr pResolver, ValuePtr pValue);
   extern Error v8_Resolver_Reject(ContextPtr pContext, ResolverPtr pResolver, ValuePtr pValue);
-  extern ValuePtr v8_Resolver_GetPromise(ContextPtr pContext, ResolverPtr pResolver);
+  extern CallResult v8_Resolver_GetPromise(ContextPtr pContext, ResolverPtr pResolver);
   extern void v8_Resolver_Release(ContextPtr pContext, ResolverPtr pResolver);
-  extern ValueTuple v8_Value_PromiseInfo(ContextPtr ctx, ValuePtr value, int *promise_state);
+  extern CallResult v8_Value_PromiseInfo(ContextPtr ctx, ValuePtr value, int *promise_state);
 
   extern PrivatePtr v8_Private_New(IsolatePtr isoptr, const char *name);
 
@@ -251,9 +274,14 @@ extern "C"
   extern void v8_Inspector_DispatchMessage(InspectorPtr inspector_ptr, const char *message);
   extern void v8_Inspector_Release(InspectorPtr pInspector);
 
-  extern ValueTuple v8_JSON_Parse(ContextPtr pContext, const char *data);
-  extern ValueTuple v8_JSON_Stringify(ContextPtr pContext, ValuePtr pValue);
+  extern CallResult v8_JSON_Parse(ContextPtr pContext, const char *data);
+  extern CallResult v8_JSON_Stringify(ContextPtr pContext, ValuePtr pValue);
 
+  extern ValueTuplePtr v8_Value_ValueTuple_New();
+  extern CallResult v8_Value_ValueTuple_New_Error(ContextPtr pContext, const char *error);
+  extern void v8_Value_ValueTuple_Retain(ValueTuplePtr vt);
+  extern void v8_Value_ValueTuple_Release(ContextPtr pContext, ValueTuplePtr vt);
+  CallResult v8_CallResult();
 #ifdef __cplusplus
 }
 #endif

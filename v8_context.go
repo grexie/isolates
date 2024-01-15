@@ -6,6 +6,8 @@ import "C"
 
 import (
 	"context"
+	"fmt"
+	"log"
 	"reflect"
 	"runtime"
 	"sync"
@@ -17,22 +19,30 @@ import (
 type Context struct {
 	refutils.RefHolder
 
-	isolate   *Isolate
-	pointer   C.ContextPtr
-	global    *Value
-	undefined *Value
-	null      *Value
-	vfalse    *Value
-	vtrue     *Value
+	isolate *Isolate
+	pointer C.ContextPtr
+	pinner  runtime.Pinner
 
-	receiverTable *Value
+	global                    *Value
+	objectCreate              *Value
+	assign                    *Value
+	keys                      *Value
+	getOwnPropertyDescriptors *Value
+	getPrototypeOf            *Value
+	undefined                 *Value
+	null                      *Value
+	vfalse                    *Value
+	vtrue                     *Value
+	errorConstructor          *Value
 
-	functions    *refutils.RefMap
-	accessors    *refutils.RefMap
-	values       *refutils.RefMap
-	refs         *refutils.RefMap
-	objects      map[uintptr]*Value
-	objectsMutex sync.Mutex
+	values int
+
+	functions *refutils.RefMap
+	accessors *refutils.RefMap
+	refs      *refutils.RefMap
+
+	receivers      map[uintptr]*Value
+	receiversMutex sync.Mutex
 
 	baseConstructor   *FunctionTemplate
 	constructors      map[reflect.Type]*FunctionTemplate
@@ -41,44 +51,53 @@ type Context struct {
 
 	weakCallbacks     map[string]*weakCallbackInfo
 	weakCallbackMutex sync.Mutex
+
+	data sync.Map
 }
 
 func (i *Isolate) NewContext(ctx context.Context) (*Context, error) {
-	c, err := i.Sync(ctx, func(ctx context.Context) (interface{}, error) {
-
+	c, err := i.Sync(ctx, func(ctx context.Context) (any, error) {
 		context := &Context{
 			isolate:       i,
 			pointer:       C.v8_Context_New(i.pointer),
 			functions:     refutils.NewRefMap("f"),
 			accessors:     refutils.NewRefMap("a"),
-			values:        refutils.NewRefMap("v"),
+			receivers:     map[uintptr]*Value{},
 			refs:          refutils.NewRefMap("v"),
-			objects:       map[uintptr]*Value{},
 			constructors:  map[reflect.Type]*FunctionTemplate{},
 			prototypes:    map[reflect.Type]*FunctionTemplate{},
 			weakCallbacks: map[string]*weakCallbackInfo{},
 		}
 
-		v := &valueRef{}
-		context.values.Ref(v)
-		context.values.Unref(v)
+		For(ctx).SetContext(context)
 
 		context.ref()
 		runtime.SetFinalizer(context, (*Context).release)
-		tracer.Add(context)
-		tracer.AddRefMap("functionInfo", context.functions)
-		tracer.AddRefMap("accessorInfo", context.accessors)
-		tracer.AddRefMap("valueRef", context.values)
-		tracer.AddRefMap("refs", context.refs)
 
 		if global, err := context.Global(ctx); err != nil {
 			return nil, err
-		} else if WeakMap, err := global.Get(ctx, "WeakMap"); err != nil {
+		} else if _, err := context.Undefined(ctx); err != nil {
 			return nil, err
-		} else if receiverTable, err := WeakMap.New(ctx); err != nil {
+		} else if _, err := context.Null(ctx); err != nil {
 			return nil, err
-		} else {
-			context.receiverTable = receiverTable
+		} else if _, err := context.False(ctx); err != nil {
+			return nil, err
+		} else if _, err := context.True(ctx); err != nil {
+			return nil, err
+		} else if Object, err := global.Get(ctx, "Object"); err != nil {
+			return nil, err
+		} else if context.objectCreate, err = Object.Get(ctx, "create"); err != nil {
+			return nil, err
+		} else if context.assign, err = Object.Get(ctx, "assign"); err != nil {
+			return nil, err
+		} else if context.keys, err = Object.Get(ctx, "keys"); err != nil {
+			return nil, err
+		} else if context.getOwnPropertyDescriptors, err = Object.Get(ctx, "getOwnPropertyDescriptors"); err != nil {
+			return nil, err
+		} else if context.getPrototypeOf, err = Object.Get(ctx, "getPrototypeOf"); err != nil {
+			return nil, err
+		} else if context.errorConstructor, err = global.Get(ctx, "Error"); err != nil {
+			return nil, err
 		}
 
 		return context, nil
@@ -89,6 +108,14 @@ func (i *Isolate) NewContext(ctx context.Context) (*Context, error) {
 	} else {
 		return c.(*Context), nil
 	}
+}
+
+func (c *Context) Receivers() int {
+	return len(c.receivers)
+}
+
+func (c *Context) Values() int {
+	return c.values
 }
 
 func (c *Context) GetIsolate() *Isolate {
@@ -105,8 +132,13 @@ func (c *Context) unref() {
 
 func (c *Context) AddMicrotask(ctx context.Context, fn func(in FunctionArgs) error) error {
 	_, err := c.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
+
 		wrapper := func(in FunctionArgs) (*Value, error) {
-			return nil, fn(in)
+			_, err := For(ctx).Sync(func(ctx context.Context) (any, error) {
+				return nil, fn(in)
+			})
+
+			return nil, err
 		}
 
 		if value, err := c.Create(ctx, wrapper); err != nil {
@@ -121,13 +153,20 @@ func (c *Context) AddMicrotask(ctx context.Context, fn func(in FunctionArgs) err
 	return err
 }
 
-func (c *Context) Run(ctx context.Context, code string, filename string) (*Value, error) {
+func (c *Context) Run(ctx context.Context, code string, filename string, module *Module) (*Value, error) {
 	pv, err := c.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
+
 		pcode := C.CString(code)
 		pfilename := C.CString(filename)
 
+		iid := c.isolate.ref()
+		defer c.isolate.unref()
+
+		mid := c.isolate.modules.Ref(module)
+		pid := C.CString(fmt.Sprintf("%d:%d", iid, mid))
+
 		c.ref()
-		vt := C.v8_Context_Run(c.pointer, pcode, pfilename)
+		vt := C.v8_Context_Run(c.pointer, pcode, pfilename, pid)
 		c.unref()
 
 		C.free(unsafe.Pointer(pcode))
@@ -143,12 +182,28 @@ func (c *Context) Run(ctx context.Context, code string, filename string) (*Value
 	}
 }
 
+func (c *Context) Data(key any) (any, bool) {
+	return c.data.Load(key)
+}
+
+func (c *Context) SetData(key any, value any) {
+	c.data.Store(key, value)
+}
+
+func (c *Context) ErrorConstructor(ctx context.Context) (*Value, error) {
+	return c.errorConstructor, nil
+}
+
 func (c *Context) Undefined(ctx context.Context) (*Value, error) {
 	pv, err := c.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
 
 		if c.undefined == nil {
-			c.undefined = c.newValue(C.v8_Context_Create(c.pointer, C.ImmediateValue{_type: C.tUNDEFINED}), C.Kinds(KindUndefined))
+			var err error
+			if c.undefined, err = c.newValueFromTuple(ctx, C.v8_Context_Create(c.pointer, C.ImmediateValue{_type: C.tUNDEFINED})); err != nil {
+				return nil, err
+			}
 		}
+
 		return c.undefined, nil
 	})
 
@@ -163,9 +218,81 @@ func (c *Context) Null(ctx context.Context) (*Value, error) {
 	pv, err := c.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
 
 		if c.null == nil {
-			c.null = c.newValue(C.v8_Context_Create(c.pointer, C.ImmediateValue{_type: C.tOBJECT}), C.Kinds(KindNull))
+			var err error
+			if c.null, err = c.newValueFromTuple(ctx, C.v8_Context_Create(c.pointer, C.ImmediateValue{_type: C.tNULL})); err != nil {
+				return nil, err
+			}
 		}
+
 		return c.null, nil
+	})
+
+	if err != nil {
+		return nil, err
+	} else {
+		return pv.(*Value), nil
+	}
+}
+
+func (c *Context) ObjectCreate(ctx context.Context, args ...any) (*Value, error) {
+	return c.objectCreate.Call(ctx, nil, args...)
+}
+
+func (c *Context) CreateAll(ctx context.Context, objects ...any) ([]*Value, error) {
+	out := make([]*Value, len(objects))
+	var err error
+
+	for i, object := range objects {
+		if out[i], err = c.Create(ctx, object); err != nil {
+			return nil, err
+		}
+	}
+
+	return out, nil
+}
+
+func (c *Context) Assign(ctx context.Context, objects ...any) (*Value, error) {
+	if result, err := c.assign.Call(ctx, nil, objects...); err != nil {
+		return nil, err
+	} else {
+		return result, nil
+	}
+}
+
+func (c *Context) AssignAll(ctx context.Context, objects ...any) (*Value, error) {
+	if objects, err := c.CreateAll(ctx, objects...); err != nil {
+		return nil, err
+	} else {
+		for _, object := range objects[1:] {
+			for ; !object.IsNil(); object, _ = object.GetPrototype(ctx) {
+				if o, _ := object.GetPrototype(ctx); o.IsNil() {
+					break
+				}
+
+				if descriptors, err := object.GetOwnPropertyDescriptors(ctx); err != nil {
+					return nil, err
+				} else {
+					for name, descriptor := range descriptors {
+						if name == "constructor" {
+							continue
+						}
+
+						if err := objects[0].DefineProperty(ctx, name, &descriptor); err != nil {
+							return nil, err
+						}
+					}
+				}
+			}
+		}
+
+		return objects[0], nil
+	}
+
+}
+
+func (c *Context) NewObject(ctx context.Context) (*Value, error) {
+	pv, err := c.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
+		return c.newValueFromTuple(ctx, C.v8_Context_Create(c.pointer, C.ImmediateValue{_type: C.tOBJECT}))
 	})
 
 	if err != nil {
@@ -178,8 +305,12 @@ func (c *Context) Null(ctx context.Context) (*Value, error) {
 func (c *Context) False(ctx context.Context) (*Value, error) {
 	pv, err := c.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
 		if c.vfalse == nil {
-			c.vfalse = c.newValue(C.v8_Context_Create(c.pointer, C.ImmediateValue{_type: C.tBOOL, _bool: false}), C.Kinds(KindBoolean))
+			var err error
+			if c.vfalse, err = c.newValueFromTuple(ctx, C.v8_Context_Create(c.pointer, C.ImmediateValue{_type: C.tBOOL, _bool: false})); err != nil {
+				return nil, err
+			}
 		}
+
 		return c.vfalse, nil
 	})
 
@@ -193,8 +324,12 @@ func (c *Context) False(ctx context.Context) (*Value, error) {
 func (c *Context) True(ctx context.Context) (*Value, error) {
 	pv, err := c.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
 		if c.vtrue == nil {
-			c.vtrue = c.newValue(C.v8_Context_Create(c.pointer, C.ImmediateValue{_type: C.tBOOL, _bool: true}), C.Kinds(KindBoolean))
+			var err error
+			if c.vtrue, err = c.newValueFromTuple(ctx, C.v8_Context_Create(c.pointer, C.ImmediateValue{_type: C.tBOOL, _bool: true})); err != nil {
+				return nil, err
+			}
 		}
+
 		return c.vtrue, nil
 	})
 
@@ -208,8 +343,12 @@ func (c *Context) True(ctx context.Context) (*Value, error) {
 func (c *Context) Global(ctx context.Context) (*Value, error) {
 	pv, err := c.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
 		if c.global == nil {
-			c.global = c.newValue(C.v8_Context_Global(c.pointer), C.Kinds(KindObject))
+			var err error
+			if c.global, err = c.newValueFromTuple(ctx, C.v8_Context_Global(c.pointer)); err != nil {
+				return nil, err
+			}
 		}
+
 		return c.global, nil
 	})
 
@@ -235,10 +374,12 @@ func (c *Context) ParseJSON(ctx context.Context, json string) (*Value, error) {
 }
 
 func (c *Context) release() {
-	ctx := WithContext(context.Background())
+	ctx := c.isolate.GetExecutionContext()
 
 	c.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
 		runtime.SetFinalizer(c, nil)
+
+		log.Println("CONTEXT RELEASED")
 
 		c.global = nil
 		c.undefined = nil
@@ -248,20 +389,12 @@ func (c *Context) release() {
 
 		c.functions.ReleaseAll()
 		c.accessors.ReleaseAll()
-		c.values.ReleaseAll()
 		c.refs.ReleaseAll()
-		c.objects = nil
 
 		c.baseConstructor = nil
 		c.constructors = nil
 
 		c.weakCallbacks = nil
-
-		tracer.RemoveRefMap("functionInfo", c.functions)
-		tracer.RemoveRefMap("accessorInfo", c.accessors)
-		tracer.RemoveRefMap("valueRef", c.values)
-		tracer.RemoveRefMap("refs", c.refs)
-		tracer.Remove(c)
 
 		if c.pointer != nil {
 			C.v8_Context_Release(c.pointer)

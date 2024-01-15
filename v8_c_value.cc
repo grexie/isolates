@@ -31,22 +31,37 @@ extern "C"
     value->SetWeak(param, ValueWeakCallback, v8::WeakCallbackType::kParameter);
   }
 
-  ValueTuple v8_Value_Get(ContextPtr pContext, ValuePtr pObject, const char *field)
+  CallResult v8_Value_Get(ContextPtr pContext, ValuePtr pObject, const char *field)
   {
     VALUE_SCOPE(pContext);
 
-    v8::Local<v8::Value> maybeObject = static_cast<Value *>(pObject)->Get(isolate);
-    if (!maybeObject->IsObject())
-    {
-      return v8_Value_ValueTuple_Error(isolate, v8_String_FromString(isolate, "Not an object"));
-    }
-    v8::Local<v8::Object> object = maybeObject->ToObject(context).ToLocalChecked();
+    v8::Local<v8::Value> value = static_cast<Value *>(pObject)->Get(isolate);
 
-    v8::Local<v8::Value> value = object->Get(context, v8::String::NewFromUtf8(isolate, field).ToLocalChecked()).ToLocalChecked();
-    return v8_Value_ValueTuple(isolate, value);
+    if (!value->IsObject())
+    {
+      return v8_Value_ValueTuple_Error(isolate, v8_String_FromString(isolate, "not an object"));
+    }
+    v8::MaybeLocal<v8::Object> maybeObject = value->ToObject(context);
+
+    if (maybeObject.IsEmpty())
+    {
+      return v8_Value_ValueTuple_Error(isolate, v8_String_FromString(isolate, "empty maybe object"));
+    }
+
+    v8::Local<v8::Object> object = maybeObject.ToLocalChecked();
+
+    v8::MaybeLocal<v8::Value>
+        result = object->Get(context, v8::String::NewFromUtf8(isolate, field).ToLocalChecked());
+
+    if (result.IsEmpty())
+    {
+      return v8_CallResult();
+    }
+
+    return v8_Value_ValueTuple(isolate, context, result.ToLocalChecked());
   }
 
-  ValueTuple v8_Value_GetIndex(ContextPtr pContext, ValuePtr pObject, int index)
+  CallResult v8_Value_GetIndex(ContextPtr pContext, ValuePtr pObject, int index)
   {
     VALUE_SCOPE(pContext);
 
@@ -62,17 +77,17 @@ extern "C"
       v8::Local<v8::ArrayBuffer> arrayBuffer = v8::Local<v8::ArrayBuffer>::Cast(maybeObject);
       if (index < arrayBuffer->ByteLength())
       {
-        return v8_Value_ValueTuple(isolate, v8::Number::New(isolate, ((unsigned char *)arrayBuffer->GetBackingStore()->Data())[index]));
+        return v8_Value_ValueTuple(isolate, context, v8::Number::New(isolate, ((unsigned char *)arrayBuffer->GetBackingStore()->Data())[index]));
       }
       else
       {
-        return v8_Value_ValueTuple(isolate, v8::Undefined(isolate));
+        return v8_Value_ValueTuple(isolate, context, v8::Undefined(isolate));
       }
     }
     else
     {
       v8::Local<v8::Object> object = maybeObject->ToObject(context).ToLocalChecked();
-      return v8_Value_ValueTuple(isolate, object->Get(context, uint32_t(index)).ToLocalChecked());
+      return v8_Value_ValueTuple(isolate, context, object->Get(context, uint32_t(index)).ToLocalChecked());
     }
   }
 
@@ -103,12 +118,15 @@ extern "C"
   {
     VALUE_SCOPE(pContext);
 
-    v8::Local<v8::Value> maybeObject = static_cast<Value *>(pValue)->Get(isolate);
-    if (!maybeObject->IsObject())
+    v8::Local<v8::Value> value = static_cast<Value *>(pValue)->Get(isolate);
+    v8::MaybeLocal<v8::Object> maybeObject = value->ToObject(context);
+
+    if (maybeObject.IsEmpty())
     {
       return v8_String_Create("Not an object");
     }
-    v8::Local<v8::Object> object = maybeObject->ToObject(context).ToLocalChecked();
+
+    v8::Local<v8::Object> object = maybeObject.ToLocalChecked();
 
     v8::Local<v8::Value> newValue = static_cast<Value *>(pNewValue)->Get(isolate);
     v8::Maybe<bool> result = object->Set(context, v8::String::NewFromUtf8(isolate, field).ToLocalChecked(), newValue);
@@ -261,7 +279,7 @@ extern "C"
     return Error{NULL, 0};
   }
 
-  ValueTuple v8_Value_GetPrivate(ContextPtr pContext, ValuePtr pValue, PrivatePtr pPrivate)
+  CallResult v8_Value_GetPrivate(ContextPtr pContext, ValuePtr pValue, PrivatePtr pPrivate)
   {
     VALUE_SCOPE(pContext);
 
@@ -274,7 +292,7 @@ extern "C"
     v8::Local<v8::Private> _private = static_cast<Private *>(pPrivate)->Get(isolate);
 
     v8::Local<v8::Value> result = object->GetPrivate(context, _private).ToLocalChecked();
-    return v8_Value_ValueTuple(isolate, result);
+    return v8_Value_ValueTuple(isolate, context, result);
   }
 
   Error v8_Value_SetPrivate(ContextPtr pContext, ValuePtr pValue, PrivatePtr pPrivate, ValuePtr pNewValue)
@@ -313,7 +331,7 @@ extern "C"
     return Error{NULL, 0};
   }
 
-  ValueTuple v8_Value_Call(ContextPtr pContext, ValuePtr pFunction, ValuePtr pSelf, int argc, ValuePtr *pArgv)
+  CallResult v8_Value_Call(ContextPtr pContext, ValuePtr pFunction, ValuePtr pSelf, int argc, ValuePtr *pArgv)
   {
     VALUE_SCOPE(pContext);
 
@@ -321,10 +339,12 @@ extern "C"
     tryCatch.SetVerbose(false);
 
     v8::Local<v8::Value> value = static_cast<Value *>(pFunction)->Get(isolate);
+
     if (!value->IsFunction())
     {
-      return v8_Value_ValueTuple_Error(isolate, v8_String_FromString(isolate, "Not a function"));
+      return v8_Value_ValueTuple_Error(isolate, v8_String_FromString(isolate, "not a function"));
     }
+
     v8::Local<v8::Function> function = v8::Local<v8::Function>::Cast(value);
 
     v8::Local<v8::Value> self;
@@ -343,19 +363,20 @@ extern "C"
       argv[i] = static_cast<Value *>(pArgv[i])->Get(isolate);
     }
 
-    v8::MaybeLocal<v8::Value> result = function->Call(context, self, argc, argv);
+    v8::MaybeLocal<v8::Value>
+        result = function->Call(context, self, argc, argv);
 
     delete[] argv;
 
     if (result.IsEmpty())
     {
-      return v8_Value_ValueTuple_Error(isolate, v8_StackTrace_FormatException(isolate, context, tryCatch));
+      return v8_Value_ValueTuple_Exception(isolate, context, tryCatch.Exception());
     }
 
-    return v8_Value_ValueTuple(isolate, result.ToLocalChecked());
+    return v8_Value_ValueTuple(isolate, context, result.ToLocalChecked());
   }
 
-  ValueTuple v8_Value_New(ContextPtr pContext, ValuePtr pFunction, int argc, ValuePtr *pArgv)
+  CallResult v8_Value_New(ContextPtr pContext, ValuePtr pFunction, int argc, ValuePtr *pArgv)
   {
     VALUE_SCOPE(pContext);
 
@@ -363,9 +384,10 @@ extern "C"
     tryCatch.SetVerbose(false);
 
     v8::Local<v8::Value> value = static_cast<Value *>(pFunction)->Get(isolate);
+
     if (!value->IsFunction())
     {
-      return v8_Value_ValueTuple_Error(isolate, v8_String_FromString(isolate, "Not a function"));
+      return v8_Value_ValueTuple_Error(isolate, v8_String_FromString(isolate, "not a function"));
     }
     v8::Local<v8::Function> function = v8::Local<v8::Function>::Cast(value);
 
@@ -381,24 +403,10 @@ extern "C"
 
     if (result.IsEmpty())
     {
-      return v8_Value_ValueTuple_Error(isolate, v8_StackTrace_FormatException(isolate, context, tryCatch));
+      return v8_Value_ValueTuple_Exception(isolate, context, tryCatch.Exception());
     }
 
-    return v8_Value_ValueTuple(isolate, result.ToLocalChecked());
-  }
-
-  void v8_Value_Release(ContextPtr pContext, ValuePtr pValue)
-  {
-    if (pValue == NULL || pContext == NULL)
-    {
-      return;
-    }
-
-    ISOLATE_SCOPE(static_cast<Context *>(pContext)->isolate);
-
-    Value *value = static_cast<Value *>(pValue);
-    value->Reset();
-    delete value;
+    return v8_Value_ValueTuple(isolate, context, result.ToLocalChecked());
   }
 
   String v8_Value_String(ContextPtr pContext, ValuePtr pValue)
@@ -457,6 +465,30 @@ extern "C"
     return valueLeft->StrictEquals(valueRight);
   }
 
+  bool v8_Value_InstanceOf(ContextPtr pContext, ValuePtr pValueLeft, ValuePtr pValueRight)
+  {
+    VALUE_SCOPE(pContext);
+
+    v8::Local<v8::Value> valueLeft = static_cast<Value *>(pValueLeft)->Get(isolate);
+    v8::Local<v8::Value> valueRight = static_cast<Value *>(pValueRight)->Get(isolate);
+
+    if (!valueRight->IsObject())
+    {
+      return false;
+    }
+
+    v8::Local<v8::Object> objectRight = valueRight->ToObject(context).ToLocalChecked();
+
+    v8::Maybe<bool> isInstanceOf = valueLeft->InstanceOf(context, objectRight);
+
+    if (isInstanceOf.IsNothing())
+    {
+      return false;
+    }
+
+    return isInstanceOf.ToChecked();
+  }
+
   int v8_Value_Bool(ContextPtr pContext, ValuePtr pValue)
   {
     VALUE_SCOPE(pContext);
@@ -483,7 +515,7 @@ extern "C"
     }
     else if (value->IsSharedArrayBuffer())
     {
-      v8::Persistent<v8::SharedArrayBuffer> arrayBuffer;
+      v8::Local<v8::SharedArrayBuffer> arrayBuffer;
       arrayBuffer = v8::Local<v8::SharedArrayBuffer>::Cast(value);
 
       return ByteArray{
@@ -534,7 +566,7 @@ extern "C"
     return static_cast<int>(arrayBuffer->GetBackingStore()->ByteLength());
   }
 
-  ValueTuple v8_Value_PromiseInfo(ContextPtr pContext, ValuePtr pValue, int *promiseState)
+  CallResult v8_Value_PromiseInfo(ContextPtr pContext, ValuePtr pValue, int *promiseState)
   {
     VALUE_SCOPE(pContext);
 
@@ -548,11 +580,11 @@ extern "C"
     *promiseState = promise->State();
     if (promise->State() == v8::Promise::PromiseState::kPending)
     {
-      return v8_Value_ValueTuple();
+      return v8_CallResult();
     }
 
     v8::Local<v8::Value> result = promise->Result();
-    return v8_Value_ValueTuple(isolate, result);
+    return v8_Value_ValueTuple(isolate, context, result);
   }
 
   PrivatePtr v8_Private_New(IsolatePtr pIsolate, const char *name)
@@ -564,7 +596,7 @@ extern "C"
     return static_cast<PrivatePtr>(new Private(isolate, _private));
   }
 
-  ValueTuple v8_JSON_Parse(ContextPtr pContext, const char *data)
+  CallResult v8_JSON_Parse(ContextPtr pContext, const char *data)
   {
     VALUE_SCOPE(pContext);
 
@@ -576,10 +608,10 @@ extern "C"
       return v8_Value_ValueTuple_Error(isolate, v8_String_FromString(isolate, "json parse gave an empty result"));
     }
 
-    return v8_Value_ValueTuple(isolate, maybeValue.ToLocalChecked());
+    return v8_Value_ValueTuple(isolate, context, maybeValue.ToLocalChecked());
   }
 
-  ValueTuple v8_JSON_Stringify(ContextPtr pContext, ValuePtr pValue)
+  CallResult v8_JSON_Stringify(ContextPtr pContext, ValuePtr pValue)
   {
     VALUE_SCOPE(pContext);
 
@@ -591,6 +623,173 @@ extern "C"
       return v8_Value_ValueTuple_Error(isolate, v8_String_FromString(isolate, "json stringify gave an empty result"));
     }
 
-    return v8_Value_ValueTuple(isolate, maybeJson.ToLocalChecked());
+    return v8_Value_ValueTuple(isolate, context, maybeJson.ToLocalChecked());
   }
+
+  ValueTuplePtr v8_Value_ValueTuple_New()
+  {
+    return v8_Value_ValueTuple();
+  }
+
+  CallResult v8_Value_ValueTuple_New_Error(ContextPtr pContext, const char *error)
+  {
+    VALUE_SCOPE(pContext);
+
+    return v8_Value_ValueTuple_Error(isolate, v8_String_FromString(isolate, error));
+  }
+
+  void v8_Value_ValueTuple_Retain(ValueTuplePtr vt)
+  {
+    vt->refCount++;
+  }
+
+  void v8_Value_ValueTuple_Release(ContextPtr pContext, ValueTuplePtr vt)
+  {
+    VALUE_SCOPE(pContext);
+
+    v8_Value_ValueTuple_Release(context, vt);
+  }
+}
+
+void v8_Value_ValueTuple_Release(v8::Local<v8::Context> context, ValueTuplePtr vt)
+{
+  if (vt->refCount == 0)
+  {
+    return;
+  }
+  if (--vt->refCount == 0)
+  {
+    if (vt->value)
+    {
+      v8::Local<v8::Value> value = static_cast<Value *>(vt->value)->Get(context->GetIsolate());
+
+      if (value->IsObject())
+      {
+        v8::MaybeLocal<v8::Object> maybeObject = value->ToObject(context);
+
+        if (!maybeObject.IsEmpty())
+        {
+          v8::Local<v8::Object> object = maybeObject.ToLocalChecked();
+          v8::Local<v8::Private> key = ((v8::Persistent<v8::Private> *)context->GetAlignedPointerFromEmbedderData(2))->Get(context->GetIsolate());
+
+          if (object->HasPrivate(context, key).ToChecked())
+          {
+            v8::Local<v8::Value> infoObjectValue = object->GetPrivate(context, key).ToLocalChecked();
+            v8::MaybeLocal<v8::Object> infoMaybeObject = infoObjectValue->ToObject(context);
+
+            if (!infoMaybeObject.IsEmpty())
+            {
+              v8::Local<v8::Object> infoObject = infoMaybeObject.ToLocalChecked();
+              infoObject->SetAlignedPointerInInternalField(0, NULL);
+            }
+          }
+        }
+      }
+
+      ((Value *)vt->value)->Reset();
+      delete ((Value *)vt->value);
+      vt->value = NULL;
+      vt->kinds = kUndefined;
+    }
+
+    delete vt;
+  }
+}
+
+ValueTuplePtr v8_Value_ValueTuple()
+{
+  ValueTuplePtr vt = new ValueTuple();
+  v8_Value_ValueTuple_Retain(vt);
+  return vt;
+}
+
+CallResult v8_Value_ValueTuple(v8::Isolate *isolate, v8::Local<v8::Context> context, v8::Local<v8::Value> value)
+{
+  v8::MaybeLocal<v8::Object> infoMaybeObject;
+  v8::MaybeLocal<v8::Object> maybeObject;
+
+  if (value->IsObject())
+  {
+    maybeObject = value->ToObject(context);
+
+    if (!maybeObject.IsEmpty())
+    {
+      v8::Local<v8::Object> object = maybeObject.ToLocalChecked();
+      v8::Local<v8::Private> key = ((v8::Persistent<v8::Private> *)context->GetAlignedPointerFromEmbedderData(2))->Get(context->GetIsolate());
+
+      if (object->HasPrivate(context, key).ToChecked())
+      {
+        v8::Local<v8::Value> infoObjectValue = object->GetPrivate(context, key).ToLocalChecked();
+        infoMaybeObject = infoObjectValue->ToObject(context);
+
+        if (!infoMaybeObject.IsEmpty())
+        {
+          v8::Local<v8::Object> infoObject = infoMaybeObject.ToLocalChecked();
+          ValueTuplePtr vt = reinterpret_cast<ValueTuplePtr>(infoObject->GetAlignedPointerFromInternalField(0));
+
+          if (vt != NULL)
+          {
+            v8_Value_ValueTuple_Retain(vt);
+            CallResult r = v8_CallResult();
+            r.result = vt;
+            return r;
+          }
+        }
+      }
+    }
+  }
+
+  ValueTuplePtr vt = v8_Value_ValueTuple();
+  vt->value = new Value(isolate, value);
+  vt->kinds = v8_Value_KindsFromLocal(value);
+
+  if (value->IsObject())
+  {
+    if (!maybeObject.IsEmpty())
+    {
+      if (infoMaybeObject.IsEmpty())
+      {
+        v8::Local<v8::Object> object = maybeObject.ToLocalChecked();
+
+        v8::Local<v8::Function> infoObjectConstructor = v8::Local<v8::Function>::Cast(context->GetEmbedderData(1));
+        v8::Local<v8::Private> key = ((v8::Persistent<v8::Private> *)context->GetAlignedPointerFromEmbedderData(2))->Get(context->GetIsolate());
+
+        infoMaybeObject = infoObjectConstructor->NewInstance(context);
+
+        v8::Local<v8::Object> infoObject = infoMaybeObject.ToLocalChecked();
+        object->SetPrivate(context, key, infoObject);
+      }
+
+      if (!infoMaybeObject.IsEmpty())
+      {
+        v8::Local<v8::Object> infoObject = infoMaybeObject.ToLocalChecked();
+        infoObject->SetAlignedPointerInInternalField(0, vt);
+      }
+    }
+  }
+
+  CallResult r = v8_CallResult();
+  r.result = vt;
+  return r;
+}
+
+CallResult v8_Value_ValueTuple_Error(v8::Isolate *isolate, const v8::Local<v8::Value> &value)
+{
+  CallResult r = v8_CallResult();
+  r.error = v8_String_Create(isolate, value);
+  r.isError = true;
+  return r;
+}
+
+CallResult v8_Value_ValueTuple_Exception(v8::Isolate *isolate, v8::Local<v8::Context> context, v8::Local<v8::Value> value)
+{
+  CallResult r = v8_Value_ValueTuple(isolate, context, value);
+  r.isError = true;
+  return r;
+}
+
+extern "C" CallResult v8_CallResult() {
+  CallResult r = CallResult();
+  memset(&r, 0, sizeof(CallResult));
+  return r;
 }

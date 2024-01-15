@@ -77,6 +77,14 @@ func (c *FunctionArgs) Background(callback func(in FunctionArgs)) {
 	})
 }
 
+func (c *FunctionArgs) Sync(callback func(in FunctionArgs) (any, error)) (any, error) {
+	return c.Context.isolate.Sync(c.ExecutionContext, func(ctx context.Context) (any, error) {
+		in := *c
+		in.ExecutionContext = ctx
+		return callback(in)
+	})
+}
+
 func (c *FunctionArgs) Arg(ctx context.Context, n int) *Value {
 	pv, _ := c.Context.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
 		if n < len(c.Args) && n >= 0 {
@@ -139,14 +147,11 @@ func (c *Context) NewFunctionTemplate(ctx context.Context, cb Function) (*Functi
 		cid := c.ref()
 		defer c.unref()
 
-		ecid := For(ctx).ref()
-		defer For(ctx).unref()
-
 		info := &functionInfo{
 			Function: cb,
 		}
 		id := c.functions.Ref(info)
-		pid := C.CString(fmt.Sprintf("%d:%d:%d:%d", iid, cid, id, ecid))
+		pid := C.CString(fmt.Sprintf("%d:%d:%d", iid, cid, id))
 		defer C.free(unsafe.Pointer(pid))
 
 		pf := C.v8_FunctionTemplate_New(c.pointer, pid)
@@ -156,8 +161,11 @@ func (c *Context) NewFunctionTemplate(ctx context.Context, cb Function) (*Functi
 			pointer: pf,
 			info:    info,
 		}
+
+		f.context.functions.Ref(f)
+
 		runtime.SetFinalizer(f, (*FunctionTemplate).release)
-		tracer.Add(f)
+
 		return f, nil
 	})
 
@@ -197,8 +205,13 @@ func (f *FunctionTemplate) SetName(ctx context.Context, name string) error {
 func (f *FunctionTemplate) GetFunction(ctx context.Context) (*Value, error) {
 	pv, err := f.context.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
 		if f.value == nil {
-			pv := C.v8_FunctionTemplate_GetFunction(f.context.pointer, f.pointer)
-			f.value = f.context.newValue(pv, unionKindFunction)
+			vt := C.v8_FunctionTemplate_GetFunction(f.context.pointer, f.pointer)
+
+			if value, err := f.context.newValueFromTuple(ctx, vt); err != nil {
+				return nil, err
+			} else {
+				f.value = value
+			}
 
 			// f.value.AddFinalizer(func(c *Context, i *functionInfo) func() {
 			// 	return func() {
@@ -209,7 +222,6 @@ func (f *FunctionTemplate) GetFunction(ctx context.Context) (*Value, error) {
 		}
 
 		return f.value, nil
-
 	})
 
 	if err != nil {
@@ -234,7 +246,7 @@ func (f *FunctionTemplate) GetInstanceTemplate(ctx context.Context) (*ObjectTemp
 			pointer: po,
 		}
 		runtime.SetFinalizer(ot, (*ObjectTemplate).release)
-		tracer.Add(ot)
+
 		f.instance = ot
 		return ot, nil
 	})
@@ -263,7 +275,6 @@ func (f *FunctionTemplate) GetPrototypeTemplate(ctx context.Context) (*ObjectTem
 			pointer: pp,
 		}
 		runtime.SetFinalizer(ot, (*ObjectTemplate).release)
-		tracer.Add(ot)
 
 		f.prototype = ot
 
@@ -278,10 +289,10 @@ func (f *FunctionTemplate) GetPrototypeTemplate(ctx context.Context) (*ObjectTem
 }
 
 func (f *FunctionTemplate) release() {
-	ctx := WithContext(context.Background())
+	ctx := f.context.isolate.GetExecutionContext()
 
 	f.context.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
-		tracer.Remove(f)
+
 		runtime.SetFinalizer(f, nil)
 		f.info = nil
 		f.value = nil
@@ -321,9 +332,6 @@ func (o *ObjectTemplate) SetAccessor(ctx context.Context, name string, getter Ge
 		cid := o.context.ref()
 		defer o.context.unref()
 
-		ecid := For(ctx).ref()
-		defer For(ctx).unref()
-
 		accessor := &accessorInfo{
 			Getter: getter,
 			Setter: setter,
@@ -333,7 +341,7 @@ func (o *ObjectTemplate) SetAccessor(ctx context.Context, name string, getter Ge
 
 		id := o.context.accessors.Ref(accessor)
 
-		pid := C.CString(fmt.Sprintf("%d:%d:%d:%d", iid, cid, id, ecid))
+		pid := C.CString(fmt.Sprintf("%d:%d:%d", iid, cid, id))
 		defer C.free(unsafe.Pointer(pid))
 
 		pname := C.CString(name)
@@ -363,10 +371,10 @@ func (o *ObjectTemplate) Copy(ctx context.Context, other *ObjectTemplate) error 
 }
 
 func (o *ObjectTemplate) release() {
-	ctx := WithContext(context.Background())
+	ctx := o.context.isolate.GetExecutionContext()
 
 	o.context.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
-		tracer.Remove(o)
+
 		runtime.SetFinalizer(o, nil)
 
 		if o.context.pointer != nil {

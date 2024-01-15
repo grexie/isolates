@@ -11,13 +11,20 @@ import (
 	"log"
 	"reflect"
 	"runtime"
+	"runtime/debug"
 	"sync"
 	"unsafe"
 
 	refutils "github.com/grexie/refutils"
 )
 
+var pinner runtime.Pinner
+
 const contextKey = "github.com/grexie/isolates"
+
+type Releaser interface {
+	Release()
+}
 
 type ExecutionContext struct {
 	refutils.RefHolder
@@ -29,6 +36,7 @@ type ExecutionContext struct {
 	entrantMutex   sync.Mutex
 	enterCallbacks []func()
 	exitCallbacks  []func()
+	releasers      []Releaser
 	enterSnapshot  HeapStatistics
 }
 
@@ -36,8 +44,13 @@ func newIsolateContext(isolate *Isolate) *ExecutionContext {
 	if isolate != nil && isolate.executionContext != nil {
 		return For(isolate.executionContext)
 	}
-	context := &ExecutionContext{isolate: isolate, enterCallbacks: []func(){}, exitCallbacks: []func(){}}
-	context.ref()
+	context := &ExecutionContext{isolate: isolate, enterCallbacks: []func(){}, exitCallbacks: []func(){}, releasers: []Releaser{}}
+	context.AddExecutionExitCallback(func() {
+		for _, releaser := range context.releasers {
+			releaser.Release()
+		}
+		context.releasers = []Releaser{}
+	})
 	return context
 }
 
@@ -59,15 +72,6 @@ func For(ctx context.Context) *ExecutionContext {
 	return ctx.Value(contextKey).(*ExecutionContext)
 }
 
-func (ec *ExecutionContext) ref() refutils.ID {
-
-	return executionContextRefs.Ref(ec)
-}
-
-func (ec *ExecutionContext) unref() {
-	executionContextRefs.Unref(ec)
-}
-
 func (ec *ExecutionContext) Isolate() *Isolate {
 	return ec.isolate
 }
@@ -78,6 +82,12 @@ func (ec *ExecutionContext) Context() *Context {
 
 func (ec *ExecutionContext) SetContext(c *Context) {
 	ec.context = c
+	ec.isolate = c.isolate
+}
+
+func (ec *ExecutionContext) AddReleaser(releaser ...Releaser) {
+
+	ec.releasers = append(ec.releasers, releaser...)
 }
 
 func (ec *ExecutionContext) AddExecutionEnterCallback(callback func()) {
@@ -121,11 +131,21 @@ type Isolate struct {
 
 	pointer          C.IsolatePtr
 	contexts         *refutils.RefMap
+	modules          *refutils.RefMap
 	mutex            sync.Mutex
+	syncMutex        sync.Mutex
 	running          bool
 	data             map[string]interface{}
 	shutdownHooks    []interface{}
 	lockerStackTrace []byte
+
+	microtaskCheckpointLock      sync.Mutex
+	scheduledMicrotaskCheckpoint bool
+
+	enterCallbacks         []func()
+	exitCallbacks          []func()
+	exitOnceCallbacks      []func()
+	scriptFinishedCallback []func()
 
 	executionContext context.Context
 	callbacks        chan callbackInfo
@@ -156,8 +176,8 @@ func NewIsolate() *Isolate {
 
 	callback := func() *Isolate {
 		isolate := &Isolate{
-			pointer:       C.v8_Isolate_New(C.StartupData{data: nil, length: 0}),
 			contexts:      refutils.NewWeakRefMap("c"),
+			modules:       refutils.NewWeakRefMap("m"),
 			running:       true,
 			data:          map[string]interface{}{},
 			shutdownHooks: []interface{}{},
@@ -165,14 +185,15 @@ func NewIsolate() *Isolate {
 			close:         make(chan bool),
 		}
 
-		isolate.executionContext = withIsolateContext(context.Background(), isolate)
+		pIsolate := unsafe.Pointer(isolate)
+		pinner.Pin(pIsolate)
+		_cgoCheckPointer := func(interface{}, interface{}) {}
+		isolate.pointer = C.v8_Isolate_New(pIsolate, C.StartupData{data: nil, length: 0})
+
+		isolate.enter()
 
 		isolate.ref()
 		runtime.SetFinalizer(isolate, (*Isolate).release)
-
-		tracer.Add(isolate)
-
-		go isolate.processCallbacks()
 
 		return isolate
 	}
@@ -186,28 +207,49 @@ func NewIsolateWithSnapshot(snapshot *Snapshot) *Isolate {
 	Initialize()
 
 	isolate := &Isolate{
-		pointer:       C.v8_Isolate_New(snapshot.data),
 		contexts:      refutils.NewWeakRefMap("c"),
+		modules:       refutils.NewWeakRefMap("m"),
 		running:       true,
 		data:          map[string]interface{}{},
 		shutdownHooks: []interface{}{},
 		callbacks:     make(chan callbackInfo),
 		close:         make(chan bool),
 	}
-	isolate.executionContext = withIsolateContext(context.Background(), isolate)
+
+	pIsolate := unsafe.Pointer(isolate)
+	pinner.Pin(pIsolate)
+	//nolint
+	_cgoCheckPointer := func(interface{}, interface{}) {}
+	isolate.pointer = C.v8_Isolate_New(pIsolate, snapshot.data)
+
+	isolate.enter()
 
 	isolate.ref()
 	runtime.SetFinalizer(isolate, (*Isolate).release)
 
-	tracer.Add(isolate)
-
-	go isolate.processCallbacks()
-
 	return isolate
 }
 
-func (i *Isolate) GetExecutionContext() *ExecutionContext {
-	return For(i.executionContext)
+func (i *Isolate) AddExecutionEnterCallback(callback func()) {
+	i.enterCallbacks = append(i.enterCallbacks, callback)
+}
+
+func (i *Isolate) AddExecutionExitCallback(callback func()) {
+	i.exitCallbacks = append(i.exitCallbacks, callback)
+}
+
+func (i *Isolate) AddExecutionExitCallbackOnce(callback func()) {
+	i.exitOnceCallbacks = append(i.exitOnceCallbacks, callback)
+}
+
+func (i *Isolate) GetExecutionContext() context.Context {
+	if i.executionContext == nil {
+		ctx := WithContext(context.Background())
+		For(ctx).isolate = i
+		return ctx
+	}
+
+	return i.executionContext
 }
 
 func (i *Isolate) ref() refutils.ID {
@@ -218,52 +260,65 @@ func (i *Isolate) unref() {
 	isolateRefs.Unref(i)
 }
 
-func (i *Isolate) processCallbacks() {
-	ctx := withIsolateContext(context.Background(), i)
-
-	i.AddShutdownHook(ctx, func(i *Isolate) {
-		i.close <- true
-	})
-
-	for true {
-		select {
-		case callback := <-i.callbacks:
-			value, err := callback.fn(i.executionContext)
-			if value == nil {
-				callback.result <- callbackResult{nil, err}
-			} else {
-				callback.result <- callbackResult{value, err}
-			}
-		case <-i.close:
-			return
-		}
-	}
-}
-
-func (i *Isolate) Sync(ctx context.Context, fn func(context.Context) (interface{}, error)) (interface{}, error) {
+func (i *Isolate) Sync(ctx context.Context, fn func(context.Context) (interface{}, error)) (result interface{}, err error) {
 	executionContext := For(ctx)
 
 	if locked := executionContext.entrantMutex.TryLock(); locked {
+		defer executionContext.entrantMutex.Unlock()
+
+		i.syncMutex.Lock()
+		defer i.syncMutex.Unlock()
+
+		i.executionContext = ctx
+		defer func() {
+			i.executionContext = nil
+		}()
+
+		i.enter()
+		defer i.exit()
+
 		executionContext.enter()
 		defer executionContext.exit()
-		defer executionContext.entrantMutex.Unlock()
 	}
 
-	if executionContext.isolate == i {
-		return fn(i.executionContext)
+	executionContext.isolate = i
+
+	defer func() {
+		if v := recover(); v != nil {
+			result = nil
+			err = fmt.Errorf("%+v\n%s", v, string(debug.Stack()))
+		}
+	}()
+
+	result, err = fn(ctx)
+	return result, err
+}
+
+func (i *Isolate) Wait(ctx context.Context) error {
+	ch := make(chan bool)
+
+	<-ch
+	return nil
+}
+
+func (i *Isolate) Contexts(ctx context.Context) ([]*Context, error) {
+	out, err := i.Sync(ctx, func(ctx context.Context) (interface{}, error) {
+		out := make([]*Context, i.contexts.Length())
+
+		j := 0
+		for ref := range i.contexts.Refs() {
+			out[j] = i.contexts.Get(ref).(*Context)
+			j++
+		}
+
+		return out, nil
+	})
+
+	if err != nil {
+		return nil, err
+	} else {
+		return out.([]*Context), nil
 	}
-
-	ch := make(chan callbackResult)
-
-	if i.pointer == nil {
-		return nil, fmt.Errorf("isolate terminated")
-	}
-
-	i.callbacks <- callbackInfo{fn, ch}
-
-	result := <-ch
-
-	return result.value, result.err
 }
 
 func (i *Isolate) IsRunning(ctx context.Context) (bool, error) {
@@ -289,29 +344,53 @@ func (i *Isolate) RequestGarbageCollectionForTesting(ctx context.Context) {
 	C.v8_Isolate_RequestGarbageCollectionForTesting(i.pointer)
 }
 
-func (i *Isolate) Enter(ctx context.Context) {
+func (i *Isolate) enter() {
 	C.v8_Isolate_Enter(i.pointer)
+	for _, callback := range i.enterCallbacks {
+		callback()
+	}
 }
 
-func (i *Isolate) Exit(ctx context.Context) {
+func (i *Isolate) exit() {
+	for _, callback := range i.exitCallbacks {
+		callback()
+	}
 	C.v8_Isolate_Exit(i.pointer)
 }
 
 func (i *Isolate) PerformMicrotaskCheckpointSync(ctx context.Context) error {
 	_, err := i.Sync(ctx, func(ctx context.Context) (interface{}, error) {
-		C.v8_Isolate_PerformMicrotaskCheckpoint(i.pointer)
+		i.microtaskCheckpointLock.Lock()
+		if i.scheduledMicrotaskCheckpoint {
+			i.microtaskCheckpointLock.Unlock()
+			C.v8_Isolate_PerformMicrotaskCheckpoint(i.pointer)
+		} else {
+			i.microtaskCheckpointLock.Unlock()
+		}
+
+		i.microtaskCheckpointLock.Lock()
+		defer i.microtaskCheckpointLock.Unlock()
+
+		i.scheduledMicrotaskCheckpoint = false
 		return nil, nil
 	})
 	return err
 }
 
-func (i *Isolate) PerformMicrotaskCheckpointInBackground() {
-	go func() {
-		ctx := withIsolateContext(context.Background(), i)
+func (i *Isolate) PerformMicrotaskCheckpointInBackground(ctx context.Context) {
+	i.microtaskCheckpointLock.Lock()
+	defer i.microtaskCheckpointLock.Unlock()
+
+	if i.scheduledMicrotaskCheckpoint {
+		return
+	}
+	i.scheduledMicrotaskCheckpoint = true
+
+	i.Background(ctx, func(ctx context.Context) {
 		if err := i.PerformMicrotaskCheckpointSync(ctx); err != nil {
 			fmt.Println(err)
 		}
-	}()
+	})
 }
 
 func (i *Isolate) EnqueueMicrotaskWithValue(ctx context.Context, fn *Value) error {
@@ -323,18 +402,33 @@ func (i *Isolate) EnqueueMicrotaskWithValue(ctx context.Context, fn *Value) erro
 		defer fn.Unref()
 
 		C.v8_Isolate_EnqueueMicrotask(i.pointer, fn.context.pointer, fn.pointer)
+
 		return nil, nil
 	})
+
+	i.PerformMicrotaskCheckpointInBackground(ctx)
+
 	return err
+}
+
+//export beforeCallEnteredCallback
+func beforeCallEnteredCallback(pIsolate C.Pointer) {
+	// i := (*Isolate)(pIsolate)
+	log.Println("BEFORE CALL ENTERED")
+}
+
+//export callCompletedCallback
+func callCompletedCallback(pIsolate C.Pointer) {
+	// i := (*Isolate)(pIsolate)
+	log.Println("CALL COMPLETED")
 }
 
 func (i *Isolate) Background(ctx context.Context, callback func(ctx context.Context)) {
 	go func() {
 		defer func() {
-			if p := recover(); p != nil {
-				err := fmt.Errorf("recover panic:")
-				log.Println(err)
-				return
+			if v := recover(); v != nil {
+				fmt.Printf("%+v\n", v)
+				debug.PrintStack()
 			}
 		}()
 
@@ -347,9 +441,7 @@ func (i *Isolate) Background(ctx context.Context, callback func(ctx context.Cont
 }
 
 func (i *Isolate) Terminate() {
-	ctx := withIsolateContext(context.Background(), i)
-	i.Sync(ctx, func(ctx context.Context) (interface{}, error) {
-		log.Println("TERMINATING ISOLATE")
+	i.Sync(i.GetExecutionContext(), func(ctx context.Context) (interface{}, error) {
 		vi := reflect.ValueOf(i)
 		for _, shutdownHook := range i.shutdownHooks {
 			reflect.ValueOf(shutdownHook).Call([]reflect.Value{vi})
@@ -376,7 +468,6 @@ func (i *Isolate) Terminate() {
 			context.(*Context).release()
 		}
 
-		tracer.Remove(i)
 		isolateRefs.Release(i)
 
 		i.data = nil
@@ -409,6 +500,7 @@ func (i *Isolate) newError(err C.Error) error {
 	if err.data == nil {
 		return nil
 	}
+
 	out := errors.New(C.GoStringN(err.data, err.length))
 	C.free(unsafe.Pointer(err.data))
 	return out

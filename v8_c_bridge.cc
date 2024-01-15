@@ -14,16 +14,12 @@ extern "C"
   v8_Initialize()
   {
 
-    v8::V8::InitializeICU();
+    v8::V8::InitializeICU("/usr/local/lib/v8/arm64/macos/release/icudtl.dat");
     _platform = v8::platform::NewDefaultPlatform();
     v8::V8::InitializePlatform(_platform.get());
     const char *flags = "--harmony-rab-gsab";
     v8::V8::SetFlagsFromString(flags, strlen(flags));
     v8::V8::Initialize();
-
-    StartupData data;
-    auto isolate = v8_Isolate_New(data);
-    printf("isolate: %p\n", isolate);
 
     // v8::V8::EnableWebAssemblyTrapHandler(true);
 

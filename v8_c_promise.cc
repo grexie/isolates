@@ -61,12 +61,12 @@ extern "C"
     return Error{NULL, 0};
   }
 
-  ValuePtr v8_Resolver_GetPromise(ContextPtr pContext, ResolverPtr pResolver)
+  CallResult v8_Resolver_GetPromise(ContextPtr pContext, ResolverPtr pResolver)
   {
     VALUE_SCOPE(pContext);
 
     v8::Local<v8::Promise::Resolver> resolver = static_cast<Resolver *>(pResolver)->Get(isolate);
-    return new Value(isolate, resolver->GetPromise());
+    return v8_Value_ValueTuple(isolate, context, static_cast<v8::Local<v8::Value>>(resolver->GetPromise()));
   }
 
   void v8_Resolver_Release(ContextPtr pContext, ResolverPtr pResolver)
