@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"reflect"
 	"runtime"
 	"runtime/debug"
@@ -82,7 +81,9 @@ func (ec *ExecutionContext) Context() *Context {
 
 func (ec *ExecutionContext) SetContext(c *Context) {
 	ec.context = c
-	ec.isolate = c.isolate
+	if c != nil {
+		ec.isolate = c.isolate
+	}
 }
 
 func (ec *ExecutionContext) AddReleaser(releaser ...Releaser) {
@@ -360,32 +361,14 @@ func (i *Isolate) exit() {
 
 func (i *Isolate) PerformMicrotaskCheckpointSync(ctx context.Context) error {
 	_, err := i.Sync(ctx, func(ctx context.Context) (interface{}, error) {
-		i.microtaskCheckpointLock.Lock()
-		if i.scheduledMicrotaskCheckpoint {
-			i.microtaskCheckpointLock.Unlock()
-			C.v8_Isolate_PerformMicrotaskCheckpoint(i.pointer)
-		} else {
-			i.microtaskCheckpointLock.Unlock()
-		}
+		C.v8_Isolate_PerformMicrotaskCheckpoint(i.pointer)
 
-		i.microtaskCheckpointLock.Lock()
-		defer i.microtaskCheckpointLock.Unlock()
-
-		i.scheduledMicrotaskCheckpoint = false
 		return nil, nil
 	})
 	return err
 }
 
 func (i *Isolate) PerformMicrotaskCheckpointInBackground(ctx context.Context) {
-	i.microtaskCheckpointLock.Lock()
-	defer i.microtaskCheckpointLock.Unlock()
-
-	if i.scheduledMicrotaskCheckpoint {
-		return
-	}
-	i.scheduledMicrotaskCheckpoint = true
-
 	i.Background(ctx, func(ctx context.Context) {
 		if err := i.PerformMicrotaskCheckpointSync(ctx); err != nil {
 			fmt.Println(err)
@@ -414,13 +397,11 @@ func (i *Isolate) EnqueueMicrotaskWithValue(ctx context.Context, fn *Value) erro
 //export beforeCallEnteredCallback
 func beforeCallEnteredCallback(pIsolate C.Pointer) {
 	// i := (*Isolate)(pIsolate)
-	log.Println("BEFORE CALL ENTERED")
 }
 
 //export callCompletedCallback
 func callCompletedCallback(pIsolate C.Pointer) {
 	// i := (*Isolate)(pIsolate)
-	log.Println("CALL COMPLETED")
 }
 
 func (i *Isolate) Background(ctx context.Context, callback func(ctx context.Context)) {

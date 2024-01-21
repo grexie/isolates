@@ -134,11 +134,7 @@ func (c *Context) AddMicrotask(ctx context.Context, fn func(in FunctionArgs) err
 	_, err := c.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
 
 		wrapper := func(in FunctionArgs) (*Value, error) {
-			_, err := For(ctx).Sync(func(ctx context.Context) (any, error) {
-				return nil, fn(in)
-			})
-
-			return nil, err
+			return nil, fn(in)
 		}
 
 		if value, err := c.Create(ctx, wrapper); err != nil {

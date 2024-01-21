@@ -53,13 +53,12 @@ func importModuleDynamicallyCallbackHandler(info *C.ImportModuleDynamicallyCallb
 		} else {
 			For(ctx).Background(func(ctx context.Context) {
 				For(ctx).Context().AddMicrotask(ctx, func(in FunctionArgs) error {
-					if exports, err := module.ImportModuleDynamically(ctx, specifier, resourceName, importAssertions); err != nil {
-						return resolver.Reject(ctx, err)
+					if exports, err := module.ImportModuleDynamically(in.ExecutionContext, specifier, resourceName, importAssertions); err != nil {
+						return resolver.Reject(in.ExecutionContext, err)
 					} else {
-						return resolver.Resolve(ctx, exports)
+						return resolver.Resolve(in.ExecutionContext, exports)
 					}
 				})
-				// For(ctx).Isolate().PerformMicrotaskCheckpointInBackground()
 			})
 
 			return promise, nil

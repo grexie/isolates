@@ -208,6 +208,13 @@ func (c *Context) create(ctx context.Context, v reflect.Value, name *string, wit
 		}
 
 		if v.Type().ConvertibleTo(errorType) && !v.Type().ConvertibleTo(v8ErrorType) {
+			c.receiversMutex.Lock()
+			value, ok := c.receivers[v.Pointer()]
+			c.receiversMutex.Unlock()
+			if ok {
+				return value, nil
+			}
+
 			if global, err := c.Global(ctx); err != nil {
 				return nil, err
 			} else if errorClass, err := global.Get(ctx, "Error"); err != nil {
@@ -217,6 +224,7 @@ func (c *Context) create(ctx context.Context, v reflect.Value, name *string, wit
 			} else if errorObject, err := errorClass.New(ctx, message); err != nil {
 				return nil, err
 			} else {
+				errorObject.SetReceiver(ctx, v)
 				return errorObject, nil
 			}
 		}

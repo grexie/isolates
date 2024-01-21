@@ -9,12 +9,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	_path "path"
 	"reflect"
 	"regexp"
 	"strings"
-	"sync"
 
 	refutils "github.com/grexie/refutils"
 )
@@ -23,7 +21,6 @@ var ErrNotResolved = errors.New("unable to resolve")
 
 type Module struct {
 	refutils.RefHolder
-	sync.Mutex
 
 	Context  *Context
 	ID       string
@@ -247,6 +244,18 @@ func resolve(ctx context.Context, fs *Value, context string, id string, conditio
 	}
 
 	if _path.IsAbs(id) {
+		for _, extension := range extensionsList {
+			if stats, err := fs.CallMethod(ctx, "statSync", id+extension); err == nil {
+				if isFile, err := stats.CallMethod(ctx, "isFile"); err != nil {
+					return nil, err
+				} else if isFile, err := isFile.Bool(ctx); err != nil {
+					return nil, err
+				} else if isFile {
+					return []*ResolveResult{{fs: fs, path: id + extension}}, nil
+				}
+			}
+		}
+
 		if stats, err := fs.CallMethod(ctx, "statSync", id); err == nil {
 			if isDirectory, err := stats.CallMethod(ctx, "isDirectory"); err != nil {
 				return nil, err
@@ -260,18 +269,6 @@ func resolve(ctx context.Context, fs *Value, context string, id string, conditio
 				}
 			} else {
 				return []*ResolveResult{{fs: fs, path: id}}, nil
-			}
-		} else {
-			for _, extension := range extensionsList {
-				if stats, err := fs.CallMethod(ctx, "statSync", id+extension); err == nil {
-					if isFile, err := stats.CallMethod(ctx, "isFile"); err != nil {
-						return nil, err
-					} else if isFile, err := isFile.Bool(ctx); err != nil {
-						return nil, err
-					} else if isFile {
-						return []*ResolveResult{{fs: fs, path: id + extension}}, nil
-					}
-				}
 			}
 		}
 	} else {
@@ -315,7 +312,7 @@ func (c *Context) CreateRequire(ctx context.Context, fs any, path string, extens
 			realpath := resolved[0].path
 
 			if resolved[0].fs != nil {
-				if fs, err := c.Create(ctx, resolved[0].fs); err != nil {
+				if fs, err := c.Create(in.ExecutionContext, resolved[0].fs); err != nil {
 					return nil, err
 				} else if rp, err := fs.CallMethod(in.ExecutionContext, "realpathSync", resolved[0].path); err != nil {
 					return nil, err
@@ -569,6 +566,8 @@ func (m *Module) V8Func_compile(in FunctionArgs) (*Value, error) {
 }
 
 func (m *Module) ImportModuleDynamically(ctx context.Context, specifier string, resourceName string, importAssertions []*Value) (*Value, error) {
-	log.Println("IMPORT MODULE DYNAMICALLY", specifier, resourceName, importAssertions)
+	if strings.HasPrefix(specifier, "file://") {
+		specifier = specifier[7:]
+	}
 	return m.Require.Call(ctx, nil, specifier)
 }

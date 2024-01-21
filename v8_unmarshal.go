@@ -8,10 +8,28 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"reflect"
 	"time"
 	"unsafe"
 )
+
+func (v *Value) IsError(ctx context.Context, err error) bool {
+	if goerrrv, _err := v.Unmarshal(ctx, errorType); _err != nil {
+		return false
+	} else {
+		goerr := goerrrv.Interface().(error)
+		return errors.Is(err, goerr)
+	}
+}
+
+func IsError(ctx context.Context, err error, target error) bool {
+	if v, ok := target.(*Value); ok {
+		return v.IsError(ctx, err)
+	} else {
+		return errors.Is(err, target)
+	}
+}
 
 func (v *Value) Unmarshal(ctx context.Context, t reflect.Type) (*reflect.Value, error) {
 	rv, err := v.context.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
@@ -21,6 +39,11 @@ func (v *Value) Unmarshal(ctx context.Context, t reflect.Type) (*reflect.Value, 
 		}
 
 		if t == errorType {
+			if v.Receiver(ctx).CanConvert(errorType) {
+				rv := v.Receiver(ctx)
+				log.Println(rv)
+				return &rv, nil
+			}
 			if s, err := v.StringValue(ctx); err != nil {
 				return nil, err
 			} else {
@@ -146,11 +169,23 @@ func (v *Value) Unmarshal(ctx context.Context, t reflect.Type) (*reflect.Value, 
 						continue
 					}
 
+					ft := f.Type
+
+					if ft.Kind() == reflect.Pointer && ft.Elem().Kind() != reflect.Struct {
+						ft = ft.Elem()
+					}
+
 					if valuev, err := v.Get(ctx, name); err != nil {
 						return nil, err
-					} else if valuerv, err := valuev.Unmarshal(ctx, f.Type); err != nil {
+					} else if valuerv, err := valuev.Unmarshal(ctx, ft); err != nil {
 						return nil, err
 					} else if !isZero(*valuerv) {
+						if f.Type.Kind() == reflect.Pointer && ft.Kind() != reflect.Pointer {
+							valuervp := reflect.New(ft)
+							valuervp.Elem().Set(*valuerv)
+							valuerv = &valuervp
+						}
+
 						rv.FieldByIndex(f.Index).Set(*valuerv)
 					}
 				}
