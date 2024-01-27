@@ -93,7 +93,7 @@ func (v *Value) Unmarshal(ctx context.Context, t reflect.Type) (*reflect.Value, 
 				return &v, nil
 			}
 		case reflect.Array, reflect.Slice:
-			if reflect.TypeOf([]byte{}).ConvertibleTo(t) {
+			if reflect.TypeOf([]byte{}).ConvertibleTo(t) && (v.IsKind(KindArrayBuffer) || v.IsKind(KindArrayBufferView)) {
 				if bytes, err := v.Bytes(ctx); err != nil {
 					return nil, err
 				} else {
@@ -121,13 +121,37 @@ func (v *Value) Unmarshal(ctx context.Context, t reflect.Type) (*reflect.Value, 
 			}
 		case reflect.Func:
 		case reflect.Ptr, reflect.Interface:
-			r := v.Receiver(ctx)
+			if t.Kind() == reflect.Interface || t.Elem().Kind() == reflect.Struct {
+				r := v.Receiver(ctx)
 
-			if r.Kind() != reflect.Pointer && r.CanAddr() {
-				r = r.Addr()
+				if r.Kind() != reflect.Pointer && r.CanAddr() {
+					r = r.Addr()
+				}
+
+				return &r, nil
+			} else if t.Elem().Kind() == reflect.Int {
+				if v.IsNil() {
+					r := reflect.New(t).Elem()
+					return &r, nil
+				} else if i, err := v.Int64(ctx); err != nil {
+					return nil, err
+				} else {
+					r := reflect.New(t.Elem())
+					r.Elem().Set(reflect.ValueOf(i).Convert(t.Elem()))
+					return &r, nil
+				}
+			} else if t.Elem().Kind() == reflect.String {
+				if v.IsNil() {
+					r := reflect.New(t).Elem()
+					return &r, nil
+				} else if s, err := v.StringValue(ctx); err != nil {
+					return nil, err
+				} else {
+					r := reflect.New(t.Elem())
+					r.Elem().Set(reflect.ValueOf(s).Convert(t.Elem()))
+					return &r, nil
+				}
 			}
-
-			return &r, nil
 		case reflect.Map:
 			if keys, err := v.Keys(ctx); err != nil {
 				return nil, err

@@ -47,6 +47,7 @@ func functionCallbackHandler(ctx context.Context, v8Context *Context, info C.Cal
 			argv,
 			args.Caller,
 			args.Holder,
+			nil,
 		})
 	})
 

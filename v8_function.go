@@ -53,6 +53,7 @@ type FunctionArgs struct {
 	Args             []*Value
 	Caller           CallerInfo
 	Holder           *Value
+	ReplaceThis      func(*Value)
 }
 
 func (c *FunctionArgs) WithArgs(args ...any) (FunctionArgs, error) {

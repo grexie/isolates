@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode"
 	"unsafe"
 )
 
@@ -405,33 +404,34 @@ func (c *Context) CreateFunction(ctx context.Context, name *string, function Fun
 }
 
 func getName(name string) string {
-	// split the string into tokens beginning with uppercase letters
-	var w1 []string
-	i := 0
-	for s := name; s != ""; s = s[i:] {
-		i = strings.IndexFunc(s[1:], unicode.IsUpper) + 1
-		if i <= 0 {
-			i = len(s)
-		}
-		w1 = append(w1, s[:i])
-	}
+	return strings.ToLower(name[0:1]) + name[1:]
+	// // split the string into tokens beginning with uppercase letters
+	// var w1 []string
+	// i := 0
+	// for s := name; s != ""; s = s[i:] {
+	// 	i = strings.IndexFunc(s[1:], unicode.IsUpper) + 1
+	// 	if i <= 0 {
+	// 		i = len(s)
+	// 	}
+	// 	w1 = append(w1, s[:i])
+	// }
 
-	// convert strings of uppercase letters to camelcase
-	var w2 []string
-	for j := 0; j < len(w1); j++ {
-		if len(w2) > 0 && strings.ToUpper(w1[j]) == w1[j] {
-			w2[len(w2)-1] += strings.ToLower(w1[j])
-		} else {
-			w2 = append(w2, strings.ToLower(w1[j]))
-		}
-	}
+	// // convert strings of uppercase letters to camelcase
+	// var w2 []string
+	// for j := 0; j < len(w1); j++ {
+	// 	if len(w2) > 0 && strings.ToUpper(w1[j]) == w1[j] {
+	// 		w2[len(w2)-1] += strings.ToLower(w1[j])
+	// 	} else {
+	// 		w2 = append(w2, strings.ToLower(w1[j]))
+	// 	}
+	// }
 
-	// title every word after the first
-	for k := 1; k < len(w2); k++ {
-		w2[k] = strings.Title(w2[k])
-	}
+	// // title every word after the first
+	// for k := 1; k < len(w2); k++ {
+	// 	w2[k] = strings.Title(w2[k])
+	// }
 
-	return strings.Join(w2, "")
+	// return strings.Join(w2, "")
 }
 
 func isConstructor(constructor reflect.Type) error {
@@ -505,6 +505,9 @@ func (c *Context) createConstructorInstance(ctx context.Context, name *string, c
 			return nil, err
 		} else {
 			fn.info.Function = func(in FunctionArgs) (*Value, error) {
+				in.ReplaceThis = func(value *Value) {
+					in.This = value
+				}
 				r := cv.Call([]reflect.Value{reflect.ValueOf(in)})
 
 				if r[1].Interface() != nil {
