@@ -543,7 +543,7 @@ func (v *Value) NewValue(ctx context.Context, argv ...*Value) (*Value, error) {
 }
 
 func (v *Value) ToError(ctx context.Context) error {
-	if v.IsKind(KindUndefined) || v.IsKind(KindNull) {
+	if v.IsNil() {
 		return nil
 	} else if errv, err := v.Unmarshal(ctx, errorType); err != nil {
 		return err

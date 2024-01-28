@@ -39,12 +39,21 @@ func (v *Value) Unmarshal(ctx context.Context, t reflect.Type) (*reflect.Value, 
 		}
 
 		if t == errorType {
-			if v.Receiver(ctx).CanConvert(errorType) {
+			if v.IsNil() {
+				rv := reflect.ValueOf((error)(nil))
+				return &rv, nil
+			} else if v.Receiver(ctx).IsValid() && v.Receiver(ctx).CanConvert(errorType) {
 				rv := v.Receiver(ctx)
 				log.Println(rv)
 				return &rv, nil
-			}
-			if s, err := v.StringValue(ctx); err != nil {
+			} else if message, err := v.Get(ctx, "message"); err != nil {
+				if s, err := message.StringValue(ctx); err != nil {
+					return nil, err
+				} else {
+					rv := reflect.ValueOf(errors.New(s))
+					return &rv, nil
+				}
+			} else if s, err := v.StringValue(ctx); err != nil {
 				return nil, err
 			} else {
 				rv := reflect.ValueOf(errors.New(s))
