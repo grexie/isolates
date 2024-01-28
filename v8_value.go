@@ -86,7 +86,9 @@ func (c *Context) newValuesFromTuples(ctx context.Context, r *C.CallResult, n C.
 func (c *Context) newValueFromTuple(ctx context.Context, r C.CallResult) (*Value, error) {
 	pv, err := c.isolate.Sync(ctx, func(ctx context.Context) (interface{}, error) {
 		if value, err := c.newValue(ctx, r.result), c.isolate.newError(r.error); err != nil {
-			C.v8_Value_ValueTuple_Release(c.pointer, r.result)
+			if r.result != nil {
+				C.v8_Value_ValueTuple_Release(c.pointer, r.result)
+			}
 			return nil, err
 		} else {
 			if r.isError {

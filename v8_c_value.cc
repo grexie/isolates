@@ -72,6 +72,19 @@ extern "C"
       return v8_Value_ValueTuple_Error(isolate, v8_String_FromString(isolate, "Not an object"));
     }
 
+    // if (maybeObject->IsTypedArray())
+    // {
+    //   v8::Local<v8::TypedArray> typedArray = v8::Local<v8::ArrayBuffer>::Cast(maybeObject);
+    //   if (index < typedArray->ByteLength())
+    //   {
+    //     return v8_Value_ValueTuple(isolate, context, v8::Number::New(isolate, ((unsigned char *)typedArray->Data())[index]));
+    //   }
+    //   else
+    //   {
+    //     return v8_Value_ValueTuple(isolate, context, v8::Undefined(isolate));
+    //   }
+    // }
+    // else
     if (maybeObject->IsArrayBuffer())
     {
       v8::Local<v8::ArrayBuffer> arrayBuffer = v8::Local<v8::ArrayBuffer>::Cast(maybeObject);
@@ -547,7 +560,8 @@ extern "C"
 
     if (value->IsTypedArray())
     {
-      arrayBuffer = v8::Local<v8::TypedArray>::Cast(value)->Buffer();
+      v8::Local<v8::TypedArray> typedArray = v8::Local<v8::TypedArray>::Cast(value);
+      return static_cast<int>(typedArray->ByteLength());
     }
     else if (value->IsArrayBuffer())
     {
