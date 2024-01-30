@@ -520,7 +520,11 @@ extern "C"
 
     if (value->IsTypedArray())
     {
-      arrayBuffer = v8::Local<v8::TypedArray>::Cast(value)->Buffer();
+      v8::Local<v8::TypedArray> typedArray = v8::Local<v8::TypedArray>::Cast(value);
+
+      return ByteArray{
+          &static_cast<const char *>(typedArray->Buffer()->GetBackingStore()->Data())[typedArray->ByteOffset()],
+          static_cast<int>(typedArray->ByteLength())};
     }
     else if (value->IsArrayBuffer())
     {
